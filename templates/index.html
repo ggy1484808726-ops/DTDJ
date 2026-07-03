@@ -1,0 +1,779 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>新增投顾草稿单</title>
+    <style>
+      :root {
+        --page-bg: linear-gradient(180deg, #f7f9fc 0%, #eef3fb 100%);
+        --card-bg: rgba(255, 255, 255, 0.92);
+        --line: #dbe3f1;
+        --line-strong: #c6d2ea;
+        --text-main: #1f2a44;
+        --text-sub: #637188;
+        --primary: #2f6fec;
+        --primary-dark: #2458bb;
+        --shadow: 0 18px 36px rgba(31, 42, 68, 0.08);
+        --radius: 18px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+        color: var(--text-main);
+        background: var(--page-bg);
+        overflow-x: hidden;
+      }
+
+      body.is-loading {
+        overflow: hidden;
+      }
+
+      .page-shell {
+        width: min(1200px, calc(100vw - 40px));
+        margin: 24px auto 32px;
+        padding: 22px 24px 28px;
+        background: var(--card-bg);
+        border: 1px solid rgba(219, 227, 241, 0.85);
+        border-radius: 24px;
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(10px);
+      }
+
+      .page-title {
+        margin: 0 0 18px;
+        font-size: 28px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+
+      .page-grid {
+        display: grid;
+        gap: 18px;
+      }
+
+      .runtime-notice {
+        display: none;
+        margin-bottom: 18px;
+        padding: 14px 16px;
+        border: 1px solid #d7e4ff;
+        border-radius: 14px;
+        background: #f5f8ff;
+        color: #42516e;
+        font-size: 13px;
+        line-height: 1.7;
+      }
+
+      .runtime-notice.is-visible {
+        display: block;
+      }
+
+      .runtime-notice code {
+        padding: 2px 6px;
+        border-radius: 6px;
+        background: rgba(47, 111, 236, 0.08);
+        color: #2458bb;
+        font-family: "SFMono-Regular", "Menlo", monospace;
+      }
+
+      .panel {
+        padding: 18px 20px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: #fff;
+        min-width: 0;
+      }
+
+      .section-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 14px;
+      }
+
+      .section-title {
+        margin: 0 0 6px;
+        font-size: 18px;
+        font-weight: 600;
+      }
+
+      .section-subtitle {
+        margin: 0;
+        color: var(--text-sub);
+        font-size: 13px;
+      }
+
+      .business-badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 8px 12px;
+        border-radius: 999px;
+        background: #edf3ff;
+        color: #2858b8;
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      .textarea-wrap {
+        position: relative;
+      }
+
+      .source-input {
+        width: 100%;
+        min-height: 160px;
+        padding: 16px 16px 64px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: #fbfcff;
+        color: var(--text-main);
+        font: inherit;
+        line-height: 1.7;
+        resize: vertical;
+        outline: none;
+        transition: border-color 0.2s ease, box-shadow 0.2s ease;
+      }
+
+      .source-input:focus {
+        border-color: #9cb7f4;
+        box-shadow: 0 0 0 4px rgba(47, 111, 236, 0.12);
+      }
+
+      .textarea-toolbar {
+        position: absolute;
+        right: 14px;
+        bottom: 14px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .char-count {
+        color: #8a94a7;
+        font-size: 12px;
+      }
+
+      .btn {
+        appearance: none;
+        border: 0;
+        border-radius: 10px;
+        padding: 10px 16px;
+        font: inherit;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+      }
+
+      .btn:disabled {
+        cursor: not-allowed;
+        opacity: 0.65;
+        transform: none;
+        box-shadow: none;
+      }
+
+      .btn:hover:not(:disabled) {
+        transform: translateY(-1px);
+      }
+
+      .btn-primary {
+        color: #fff;
+        background: linear-gradient(135deg, var(--primary) 0%, #4b8cff 100%);
+        box-shadow: 0 8px 16px rgba(47, 111, 236, 0.22);
+      }
+
+      .btn-primary:hover:not(:disabled) {
+        background: linear-gradient(135deg, var(--primary-dark) 0%, #3779ef 100%);
+      }
+
+      .btn-secondary {
+        color: var(--text-main);
+        background: #eef3ff;
+      }
+
+      .meta-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .message {
+        min-height: 20px;
+        color: var(--text-sub);
+        font-size: 13px;
+      }
+
+      .message.error {
+        color: #d14343;
+      }
+
+      .table-wrap {
+        width: 100%;
+        max-width: 100%;
+        overflow-x: auto;
+        overflow-y: hidden;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        overscroll-behavior-x: contain;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      table {
+        width: max-content;
+        min-width: 1900px;
+        border-collapse: collapse;
+        background: #fff;
+      }
+
+      thead th {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        padding: 12px 10px;
+        border-bottom: 1px solid var(--line-strong);
+        background: #f5f8ff;
+        font-size: 13px;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+
+      tbody td {
+        padding: 8px;
+        border-bottom: 1px solid #edf1f7;
+        border-right: 1px solid #f1f4fa;
+        vertical-align: top;
+        background: #fff;
+      }
+
+      tbody tr:nth-child(2n) td {
+        background: #fcfdff;
+      }
+
+      .cell-input,
+      .cell-select {
+        width: 100%;
+        min-width: 110px;
+        padding: 8px 10px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #fff;
+        color: var(--text-main);
+        font: inherit;
+        font-size: 13px;
+        outline: none;
+      }
+
+      .cell-input:focus,
+      .cell-select:focus {
+        border-color: #9cb7f4;
+        box-shadow: 0 0 0 3px rgba(47, 111, 236, 0.1);
+      }
+
+      .op-cell {
+        min-width: 80px;
+        text-align: center;
+      }
+
+      .op-group {
+        display: inline-flex;
+        gap: 6px;
+      }
+
+      .icon-btn {
+        width: 28px;
+        height: 28px;
+        border: 0;
+        border-radius: 999px;
+        color: #fff;
+        cursor: pointer;
+        font-size: 16px;
+        line-height: 1;
+      }
+
+      .icon-add {
+        background: #2f6fec;
+      }
+
+      .icon-remove {
+        background: #ef5b5b;
+      }
+
+      .empty-state {
+        padding: 44px 20px;
+        text-align: center;
+        color: var(--text-sub);
+        font-size: 14px;
+      }
+
+      .loading-mask {
+        position: fixed;
+        inset: 0;
+        z-index: 2000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+        background: rgba(241, 246, 255, 0.72);
+        backdrop-filter: blur(8px);
+        opacity: 0;
+        visibility: hidden;
+        transition: opacity 0.18s ease, visibility 0.18s ease;
+      }
+
+      .loading-mask.is-visible {
+        opacity: 1;
+        visibility: visible;
+      }
+
+      .loading-card {
+        min-width: 240px;
+        padding: 26px 28px;
+        border: 1px solid rgba(201, 215, 243, 0.95);
+        border-radius: 22px;
+        background: rgba(255, 255, 255, 0.96);
+        box-shadow: 0 20px 40px rgba(31, 42, 68, 0.14);
+        text-align: center;
+      }
+
+      .loading-spinner {
+        width: 46px;
+        height: 46px;
+        margin: 0 auto 16px;
+        display: block;
+        border: 4px solid #d8e3fb;
+        border-top-color: #2f6fec;
+        border-radius: 50%;
+        animation: spin 0.85s linear infinite;
+      }
+
+      .loading-title {
+        margin: 0 0 6px;
+        font-size: 18px;
+        font-weight: 600;
+        color: var(--text-main);
+      }
+
+      .loading-desc {
+        margin: 0;
+        font-size: 13px;
+        color: var(--text-sub);
+        line-height: 1.6;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      @media (max-width: 900px) {
+        .page-shell {
+          width: calc(100vw - 20px);
+          margin: 10px auto;
+          padding: 14px;
+          border-radius: 18px;
+        }
+
+        .section-head,
+        .meta-row {
+          flex-direction: column;
+          align-items: stretch;
+        }
+
+        .textarea-toolbar {
+          left: 14px;
+          right: 14px;
+          justify-content: space-between;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page-shell">
+      <h1 class="page-title">新增投顾草稿单</h1>
+      <div id="runtimeNotice" class="runtime-notice" hidden></div>
+
+      <div class="page-grid">
+        <section class="panel">
+          <div class="section-head">
+            <div>
+              <h2 class="section-title">文本识别</h2>
+              <p class="section-subtitle">将代投代缴原始文本贴入输入框，点击按钮后自动拆分并结构化。</p>
+            </div>
+            <span class="business-badge">业务类型：现券交易</span>
+          </div>
+
+          <div class="textarea-wrap">
+            <textarea
+              id="sourceText"
+              class="source-input"
+              placeholder="请输入代投代缴文本内容"
+            ></textarea>
+            <div class="textarea-toolbar">
+              <span id="charCount" class="char-count">0 字</span>
+              <button id="clearButton" type="button" class="btn btn-secondary">清空</button>
+              <button id="recognizeButton" type="button" class="btn btn-primary">代投代缴识别</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <div>
+              <h2 class="section-title">结构化结果</h2>
+              <p id="resultSummary" class="section-subtitle">等待识别</p>
+            </div>
+            <div>
+              <button id="appendRowButton" type="button" class="btn btn-secondary">新增空行</button>
+            </div>
+          </div>
+
+          <div class="meta-row">
+            <div id="message" class="message"></div>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr id="resultHeaderRow"></tr>
+              </thead>
+              <tbody id="resultBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <div id="loadingMask" class="loading-mask" hidden>
+      <div class="loading-card" role="status" aria-live="polite" aria-busy="true">
+        <span class="loading-spinner" aria-hidden="true"></span>
+        <p class="loading-title">识别中</p>
+        <p class="loading-desc">正在执行代投代缴识别，请稍候。</p>
+      </div>
+    </div>
+
+    <script>
+      const DEFAULT_COLUMNS = [
+        "交易方向",
+        "交易日期",
+        "债券代码",
+        "债券简称",
+        "到期收益率",
+        "行权收益率",
+        "原始净价",
+        "交易净价",
+        "交易规模万",
+        "我方账户",
+        "对方账户",
+        "过券",
+        "中介",
+        "中介费",
+        "对手方交易员",
+        "清算速度",
+        "约定号",
+        "对手方交易员代码",
+        "对手方交易商代码",
+        "对手方交易商简称",
+        "对手方交易主体代码",
+        "报价发起方",
+      ];
+      const LOCAL_APP_URL = "http://127.0.0.1:8001";
+      const isDirectFileOpen = window.location.protocol === "file:";
+      const apiBaseUrl = isDirectFileOpen ? LOCAL_APP_URL : window.location.origin;
+      const sourceText = document.getElementById("sourceText");
+      const recognizeButton = document.getElementById("recognizeButton");
+      const clearButton = document.getElementById("clearButton");
+      const appendRowButton = document.getElementById("appendRowButton");
+      const charCount = document.getElementById("charCount");
+      const resultHeaderRow = document.getElementById("resultHeaderRow");
+      const resultBody = document.getElementById("resultBody");
+      const resultSummary = document.getElementById("resultSummary");
+      const messageEl = document.getElementById("message");
+      const loadingMask = document.getElementById("loadingMask");
+      const runtimeNotice = document.getElementById("runtimeNotice");
+
+      let columns = [...DEFAULT_COLUMNS];
+
+      let rows = [];
+      let recognitionState = "idle";
+
+      const selectOptions = {
+        "交易方向": ["", "买入", "卖出"],
+        "报价发起方": ["", "我方发起", "对方发起"],
+        "中介": ["", "无"],
+      };
+
+      function updateCharCount() {
+        charCount.textContent = `${sourceText.value.length} 字`;
+      }
+
+      function setMessage(text, isError = false) {
+        messageEl.textContent = text || "";
+        messageEl.classList.toggle("error", isError);
+      }
+
+      function renderHeader() {
+        const headerCells = columns
+          .map((column) => `<th>${escapeHtml(column)}</th>`)
+          .join("");
+        resultHeaderRow.innerHTML = `${headerCells}<th>操作</th>`;
+      }
+
+      function syncRuntimeNotice() {
+        if (!isDirectFileOpen) {
+          runtimeNotice.hidden = true;
+          runtimeNotice.classList.remove("is-visible");
+          return;
+        }
+
+        runtimeNotice.hidden = false;
+        runtimeNotice.classList.add("is-visible");
+        runtimeNotice.innerHTML =
+          `当前是直接打开的本地 HTML 文件。请先运行 <code>python3 app.py</code>，推荐访问 <code>${LOCAL_APP_URL}/</code>；如果识别服务已启动，本页也会直接连接该地址。`;
+        setMessage(`当前为本地文件模式，识别接口将连接 ${LOCAL_APP_URL}。`);
+      }
+
+      function createBlankRow() {
+        return Object.fromEntries(columns.map((column) => [column, ""]));
+      }
+
+      function getSummaryText() {
+        if (recognitionState === "loading") {
+          return "识别中...";
+        }
+        if (rows.length) {
+          return `已识别 ${rows.length} 条记录，可继续手工调整字段`;
+        }
+        if (recognitionState === "empty") {
+          return "未识别到可解析记录";
+        }
+        if (recognitionState === "error") {
+          return "识别失败";
+        }
+        return "等待识别";
+      }
+
+      function getEmptyStateText() {
+        if (recognitionState === "empty") {
+          return "未识别到可解析记录";
+        }
+        if (recognitionState === "loading") {
+          return "识别中...";
+        }
+        return "暂无识别结果";
+      }
+
+      function updateSummary() {
+        resultSummary.textContent = getSummaryText();
+      }
+
+      function setLoading(isLoading) {
+        document.body.classList.toggle("is-loading", isLoading);
+        loadingMask.hidden = !isLoading;
+        loadingMask.classList.toggle("is-visible", isLoading);
+        sourceText.disabled = isLoading;
+        recognizeButton.disabled = isLoading;
+        clearButton.disabled = isLoading;
+        appendRowButton.disabled = isLoading;
+      }
+
+      function renderRows() {
+        updateSummary();
+
+        if (!rows.length) {
+          resultBody.innerHTML = `<tr><td class="empty-state" colspan="${columns.length + 1}">${getEmptyStateText()}</td></tr>`;
+          return;
+        }
+
+        resultBody.innerHTML = rows
+          .map((row, rowIndex) => {
+            const cells = columns
+              .map((column) => {
+                const value = row[column] ?? "";
+                if (selectOptions[column]) {
+                  const options = selectOptions[column]
+                    .map(
+                      (option) =>
+                        `<option value="${option}" ${option === value ? "selected" : ""}>${option || "请选择"}</option>`
+                    )
+                    .join("");
+                  return `
+                    <td>
+                      <select class="cell-select" data-row="${rowIndex}" data-column="${column}">
+                        ${options}
+                      </select>
+                    </td>
+                  `;
+                }
+                return `
+                  <td>
+                    <input
+                      class="cell-input"
+                      type="text"
+                      value="${escapeHtml(String(value))}"
+                      data-row="${rowIndex}"
+                      data-column="${column}"
+                    />
+                  </td>
+                `;
+              })
+              .join("");
+
+            return `
+              <tr>
+                ${cells}
+                <td class="op-cell">
+                  <div class="op-group">
+                    <button class="icon-btn icon-add" type="button" data-action="add" data-row="${rowIndex}">+</button>
+                    <button class="icon-btn icon-remove" type="button" data-action="remove" data-row="${rowIndex}">-</button>
+                  </div>
+                </td>
+              </tr>
+            `;
+          })
+          .join("");
+      }
+
+      function escapeHtml(text) {
+        return text
+          .replaceAll("&", "&amp;")
+          .replaceAll("\"", "&quot;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;");
+      }
+
+      function getRecognizeErrorMessage(error) {
+        if (error instanceof TypeError) {
+          if (isDirectFileOpen) {
+            return `未连接到本地识别服务。请先运行 python3 app.py，再重试。目标地址：${LOCAL_APP_URL}/api/recognize-agent`;
+          }
+          return "识别服务不可用，请确认 app.py 已启动。";
+        }
+        return error.message || "识别失败，请检查脚本或输入内容。";
+      }
+
+      async function recognize() {
+        const text = sourceText.value.trim();
+        if (!text) {
+          setMessage("请输入待识别文本。", true);
+          return;
+        }
+
+        recognitionState = "loading";
+        renderRows();
+        setMessage("识别中...");
+        setLoading(true);
+        await new Promise((resolve) => window.requestAnimationFrame(resolve));
+
+        try {
+          const response = await fetch(`${apiBaseUrl}/api/recognize-agent`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text }),
+          });
+          const data = await response.json();
+
+          if (!response.ok || !data.success) {
+            throw new Error(data.message || "识别失败");
+          }
+
+          if (Array.isArray(data.columns) && data.columns.length) {
+            columns = [...data.columns];
+            renderHeader();
+          }
+
+          rows = (data.rows || []).map((row) => {
+            const nextRow = createBlankRow();
+            for (const column of columns) {
+              nextRow[column] = row[column] ?? "";
+            }
+            return nextRow;
+          });
+
+          recognitionState = rows.length ? "done" : "empty";
+          renderRows();
+          setMessage(data.message || `识别完成，共 ${rows.length} 条。`);
+        } catch (error) {
+          recognitionState = "error";
+          renderRows();
+          setMessage(getRecognizeErrorMessage(error), true);
+        } finally {
+          setLoading(false);
+        }
+      }
+
+      sourceText.addEventListener("input", updateCharCount);
+
+      clearButton.addEventListener("click", () => {
+        sourceText.value = "";
+        updateCharCount();
+        setMessage("");
+      });
+
+      recognizeButton.addEventListener("click", recognize);
+
+      appendRowButton.addEventListener("click", () => {
+        recognitionState = "done";
+        rows.push(createBlankRow());
+        renderRows();
+        setMessage("已新增一行空白记录。");
+      });
+
+      resultBody.addEventListener("input", (event) => {
+        const target = event.target;
+        const rowIndex = Number(target.dataset.row);
+        const column = target.dataset.column;
+        if (Number.isNaN(rowIndex) || !column || !rows[rowIndex]) {
+          return;
+        }
+        rows[rowIndex][column] = target.value;
+      });
+
+      resultBody.addEventListener("change", (event) => {
+        const target = event.target;
+        const rowIndex = Number(target.dataset.row);
+        const column = target.dataset.column;
+        if (Number.isNaN(rowIndex) || !column || !rows[rowIndex]) {
+          return;
+        }
+        rows[rowIndex][column] = target.value;
+      });
+
+      resultBody.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-action]");
+        if (!button) {
+          return;
+        }
+
+        const rowIndex = Number(button.dataset.row);
+        if (Number.isNaN(rowIndex)) {
+          return;
+        }
+
+        if (button.dataset.action === "add") {
+          rows.splice(rowIndex + 1, 0, { ...rows[rowIndex] });
+          setMessage("已复制当前行。");
+        }
+
+        if (button.dataset.action === "remove") {
+          rows.splice(rowIndex, 1);
+          setMessage("已删除当前行。");
+        }
+
+        renderRows();
+      });
+
+      updateCharCount();
+      renderHeader();
+      renderRows();
+      syncRuntimeNotice();
+    </script>
+  </body>
+</html>

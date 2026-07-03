@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.venv/
+
+现券预录单要素_脚本输出.xlsx
+现券预录单要素识别结果.xlsx
