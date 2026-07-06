@@ -173,6 +173,15 @@ def extract_multi(seg, mkt):
             out=[(a,b,int(szl[i]),d,e) for i,(a,b,c,d,e) in enumerate(out)]
     return out if len(out)>=2 else []
 
+# 表格式(5+5 行权)：日期 期限 简称 对方 代码 规模 行权 收益率 净价 我方 主体代码 约定号
+RE_TABLE = re.compile(r'20\d{6}\s+\S+\s+\S+\s+([一-龥A-Za-z0-9－\-]+)\s+\d{6}\.[A-Z]{2}\s+(\d+)\s+行权\s+([\d.]+)\s+(\d+)\s+\S+\s+(36\d{8})\s+(70\d{5,7})')
+def extract_table(rec):
+    out=[]
+    for m in RE_TABLE.finditer(rec):
+        out.append(dict(acct=m.group(1),size=int(m.group(2)),xingquan=m.group(3),
+                        price=m.group(4),subj=m.group(5),yd=m.group(6)))
+    return out if len(out)>=2 else []
+
 def extract_paren_products(rec):
     """括号内'+'连写的产品串：(西藏信托 长盈稳健25号1200+西藏信托 善盈长盈稳健42号1600+...) → [(名,规模)]"""
     m=re.search(r'[（(]([^）)]*[一-龥][^）)]*[+＋][^）)]*)[）)]', rec)
@@ -253,15 +262,24 @@ def direction_and_split(rec, mine_pos):
         return ("卖出", rec[j+2:], rec[:j]) if mine_pos>j else ("买入", rec[:j], rec[j+2:])
     return "", rec, ""
 
+# 常见交易商代码→机构简称（原文未拼出机构名时兜底，按需维护）
+DEALER_NAME={
+    "000262":"中信证券","000038":"中信证券华南","000032":"广发证券","000680":"中信建投证券",
+    "000039":"世纪证券","000613":"首创证券","006206":"国泰基金","000028":"方正证券",
+    "000287":"东吴证券","000664":"财通证券","006285":"国联基金","006205":"富国基金",
+    "006281":"太平基金","000128":"兴业证券","000001":"国信证券","000612":"国泰海通",
+    "000058":"华鑫证券","000695":"申港证券","000316":"第一创业","007101":"华泰资产",
+    "007130":"英大资产","000402":"东方财富","000025":"光大证券","006223":"宝惠",
+}
 def org_near(rec, code6):
-    """按6位交易商代码就近取机构名（前后各12字），如 '首创证券 交易商代码：000613' / '交易商代码：000039 世纪证券'"""
+    """按6位交易商代码就近取机构名（前后各14字）；取不到则查代码映射"""
     if not code6: return ""
     i=rec.find(code6)
-    if i<0: return ""
-    for region in (rec[i+6:i+6+14], rec[max(0,i-14):i]):
-        m=RE_ORG.search(region)
-        if m: return m.group(1)
-    return ""
+    if i>=0:
+        for region in (rec[i+6:i+6+14], rec[max(0,i-14):i]):
+            m=RE_ORG.search(region)
+            if m: return m.group(1)
+    return DEALER_NAME.get(code6, "")
 
 def other_codes(rec, mine, mine_pos):
     """取"非我方"的交易商/交易员代码：我方代码紧跟白名单之后，其余即对手方"""
@@ -332,7 +350,8 @@ def parse_record(rec):
         pm2=RE_PRICE2.search(rec.replace(code,''))
         if pm2: price=pm2.group(1)
     ym=RE_YIELD.search(rec); yld = ym.group(1)+'%' if ym else ""
-    xk=re.search(r'(\d+(?:\.\d+)?)\s*行权', rec); xingquan = xk.group(1) if xk else ""  # 2.08行权→行权收益率2.08
+    xk=re.search(r'行权[^\d]{0,3}(\d+\.\d+)|(\d+\.\d+)\s*行权', rec)  # "行权 2.2"或"2.08行权"，取小数(收益率)
+    xingquan = (xk.group(1) or xk.group(2)) if xk else ""
     dqk=re.search(r'(\d+(?:\.\d+)?)\s*到期', rec)
     if dqk and not yld: yld = dqk.group(1)
     init_raw=RE_INIT.search(rec); init_raw=init_raw.group(1) if init_raw else ""
@@ -400,6 +419,21 @@ def parse_record(rec):
             对手方交易员代码=counter_trader_code,对手方交易商代码=counter_dealer_code,
             对手方交易商简称=counter_short,对手方交易主体代码=subj if subj else counter_subj,
             报价发起方=initiator,原文=rec,备注="")
+    table=extract_table(rec)            # 5+5行权表格式：逐行一笔
+    if table:
+        odc,otc=other_codes(rec, mine, mpos)
+        short=org_near(rec, odc)
+        person=person_name(rec)
+        for t in table:
+            r=mk(t['size'], t['yd'], acct=t['acct'], subj=t['subj'])
+            r['行权收益率']=t['xingquan']; r['到期收益率']=''
+            r['原始净价']=t['price']; r['交易净价']=t['price']
+            if odc: r['对手方交易商代码']=odc
+            if otc: r['对手方交易员代码']=otc
+            if person: r['对手方交易员']=person
+            r['过券']= short or t['acct']
+            rows.append(r)
+        return rows
     if multibond:                       # 同对手多只券：逐券一行
         for b in multibond:
             r=mk(b['size'], b['yd'])

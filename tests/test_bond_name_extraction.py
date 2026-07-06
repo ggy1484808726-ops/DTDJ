@@ -46,6 +46,23 @@ class BondNameExtractionTests(unittest.TestCase):
                 rows = extractor.parse_text(text)
                 self.assertEqual(rows[0]["债券简称"], expected)
 
+    def test_table_style_rows_are_split(self):
+        text = (
+            "20260703 5+5 24科创债 某产品 123456.SH 1000 行权 2.2 99 某我方 3600001234 7012345\n"
+            "20260703 5+5 24科创债 某产品2 123456.SH 2000 行权 2.3 100 某我方 3600001235 7012346"
+        )
+        rows = extractor.parse_text(text)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["对方账户"], "某产品")
+        self.assertEqual(rows[0]["行权收益率"], "2.2")
+        self.assertEqual(rows[0]["约定号"], "7012345")
+        self.assertEqual(rows[1]["对方账户"], "某产品2")
+        self.assertEqual(rows[1]["行权收益率"], "2.3")
+        self.assertEqual(rows[1]["约定号"], "7012346")
+
+    def test_dealer_code_mapping_fallback_still_works(self):
+        self.assertEqual(extractor.org_near("只有代码 000032 没有机构全称", "000032"), "广发证券")
+
 
 if __name__ == "__main__":
     unittest.main()
