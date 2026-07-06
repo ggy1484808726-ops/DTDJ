@@ -91,7 +91,7 @@ def recognize_agent():
         return ("", 204)
 
     payload = request.get_json(silent=True) or {}
-    text = (payload.get("text") or "").strip()
+    text = (payload.get("text") or payload.get("input_text") or "").strip()
     if not text:
         return jsonify({"success": False, "message": "请输入待识别文本。"}), 400
 
