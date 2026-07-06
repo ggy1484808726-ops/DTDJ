@@ -71,21 +71,42 @@ def get_size(rec):
     if m: return int(m.group(1))
     return ""
 
-BADNAME=re.compile(r'^(净价|交易|约定|出给|买入|卖出|净|交易所)')
-# 债券简称：年份2位+中文+编号，允许内部空格(如"25 唐国 05")，编号后不吃后续数字
-NAMEPAT=r'(\d{2}\s?[一-龥]{1,4}[A-Z]{1,2}\d{1,3}|\d{2}\s?[一-龥]{1,4}\s?[A-Z0-9]{0,3}|[一-龥]{1,3}\s?\d{2}\s?[一-龥]{0,2}[A-Z0-9]{0,3}|[一-龥]{2,4}[A-Z]{1,2}\d{1,3})'
+BADNAME_WORDS = (
+    "净价", "交易", "约定", "出给", "买入", "卖出", "交易所",
+    "主体", "名称", "代码", "票面", "到期", "行权", "发单", "先发", "报价",
+)
+# 债券简称：仅抓代码前后紧邻的债券命名形态，避免把 i 码尾号 / 交易动词误当简称
+NAMEPATS = [
+    re.compile(r'(?<![A-Za-z0-9一-龥])(\d{2}\s*[一-龥]{1,6}\s*[A-Z]{1,3}\s*\d{1,3})(?![A-Za-z0-9一-龥])'),
+    re.compile(r'(?<![A-Za-z0-9一-龥])(\d{2}\s*[一-龥]{1,6}\s*\d{2})(?![A-Za-z0-9一-龥])'),
+    re.compile(r'(?<![A-Za-z0-9一-龥])([一-龥]{2,4}\s*[A-Z]{1,3}\s*\d{2,3})(?![A-Za-z0-9一-龥])'),
+    re.compile(r'(?<![A-Za-z0-9一-龥])([一-龥]{1,3}\s*\d{2}\s*[一-龥]{1,3}\s*[A-Z]{1,3}\s*\d{1,3})(?![A-Za-z0-9一-龥])'),
+]
 def _clean_name(s):
-    nm=re.sub(r'\s','',s)
-    return nm if (re.search(r'[一-龥]',nm) and not BADNAME.match(nm)) else ""
+    nm=re.sub(r'\s+','',s)
+    if not nm or not re.search(r'[一-龥]', nm): return ""
+    if any(word in nm for word in BADNAME_WORDS): return ""
+    return nm if 4 <= len(nm) <= 12 else ""
+def _pick_name(seg, prefer='last'):
+    hits=[]
+    for pat in NAMEPATS:
+        for m in pat.finditer(seg):
+            nm=_clean_name(m.group(1))
+            if nm:
+                hits.append((m.start(1), m.end(1), nm))
+    if not hits: return ""
+    if prefer=='first':
+        hits.sort(key=lambda x: (x[0], -(x[1]-x[0])))
+    else:
+        hits.sort(key=lambda x: (-x[1], -(x[1]-x[0]), x[0]))
+    return hits[0][2]
 def get_name(rec, code):
     i=rec.find(code); L=len(code)
-    before=rec[max(0,i-18):i]; after=rec[i+L:i+L+18]
-    # 优先"紧邻代码"的名字：先代码前(如 26济新K2 283069.SH)，再代码后(如 245555.SH 26中电K2)
-    m=re.search(NAMEPAT+r'[\s，,：:（(]{0,2}$', before)
-    if m and _clean_name(m.group(1)): return _clean_name(m.group(1))
-    m=re.match(r'\s{0,2}'+NAMEPAT+r'(?![一-龥])', after)
-    if m and _clean_name(m.group(1)): return _clean_name(m.group(1))
-    return ""
+    before=rec[max(0,i-24):i]; after=rec[i+L:i+L+24]
+    # 优先代码后的简称，避免把代码前的 i 码尾号 / 买卖动词拼成伪简称
+    name=_pick_name(after, prefer='first')
+    if name: return name
+    return _pick_name(before, prefer='last')
 
 def dealer_org(seg):
     m=RE_DEALER_ORG.search(seg)
@@ -255,7 +276,7 @@ def other_codes(rec, mine, mine_pos):
         ts=[c for c in re.findall(r'[（(]([0-9A-Z]{7,8})[)）]', rec) if c!=mt]
     return (ds[0] if ds else ""), (ts[0] if ts else "")
 
-RE_NOTNAME=re.compile(r'券|经纪|交易|证券|机构|资管|基金|信托|银行|资产|公司|约定|集合|计划|组合|年金|产品|管理|保险|养老|席位|主体|代码|名称|净价|类型|资本|银')
+RE_NOTNAME=re.compile(r'券|经纪|交易|证券|机构|资管|基金|信托|银行|资产|公司|约定|集合|计划|组合|年金|产品|管理|保险|养老|席位|主体|代码|名称|净价|类型|资本|银|买|卖|发|出给|存续|持有')
 def person_name(seg):
     """对手方交易员姓名：名可在码前/码后/单独'交易员：名'，排除'…机构经纪交易员'等非人名"""
     pats=[
