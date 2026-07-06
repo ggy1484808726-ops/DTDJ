@@ -18,18 +18,21 @@ WHITELIST = [
     "中信信托信昱11号","中信信托信昱13号","中信信托华盈添利4号",
     "粤财信托添添益1号","粤财信托锐益2号","粤财信托广盈恒益1号",
     "财信信托湘信财盈73号","财信信托湘信财盈74号",
+    "中粮佳盈1号","广粤尊享77号",
 ]
 
 # ========== 2. 字段正则 ==========
 RE_BOND   = re.compile(r'(\d{6})\.(SH|SZ)')
 RE_PRICE  = re.compile(r'净价\s*(\d{2,3}(?:\.\d+)?)')
 RE_PRICE2 = re.compile(r'(?<!\d)(1\d{2}(?:\.\d+)?)(?!\d)')      # 兜底 100~199
+RE_PRICE3 = re.compile(r'\d+(?:\.\d+)?%\s*(\d{2,3}(?:\.\d+)?)')  # 收益率后紧跟净价，如 2.564% 99.814
 RE_YIELD  = re.compile(r'(\d+(?:\.\d+)?)\s*%')
 RE_YIELD2 = re.compile(r'(?<![\d.])([12]\.\d{2,3})(?![\d%])')   # 裸 1.xx/2.xx
 RE_DATEF  = re.compile(r'(20\d{2})\s*[-./]\s*(\d{1,2})\s*[-./]\s*(\d{1,2})')
 RE_DATES  = re.compile(r'(?<!\d)(\d{1,2})[.](\d{1,2})\s*交易所')
 RE_YD     = re.compile(r'约(?:定号)?[：:\s]*([0-9]+(?:\s*[+＋、，,]\s*[0-9]+)*)')  # 支持 + 、 ，分隔及"约"简写
 RE_YD_ALL = re.compile(r'\b(\d{3,10})\b')
+RE_YD_LINE= re.compile(r'约(?:定号)?[：:\s]*([0-9]{3,10}(?:\s*[+＋、，,]\s*[0-9]{3,10})*)')
 RE_DEALER = re.compile(r'交易商(?:代码|号)?\s*[:：]?\s*(\d{6})')
 RE_TRADER = re.compile(r'交易员(?:代码|号)?\s*[:：]?\s*([0-9A-Z]{8})')
 RE_TRADER2= re.compile(r'交易员(?:及交易员代码|代码|名称|号)?\s*[：:]?\s*[一-龥]{2,4}\s*[（(]?\s*([0-9A-Z]{7,8})')  # 名在码前：赵越 00H00010 / 付玉 007Z0039
@@ -44,8 +47,8 @@ RE_MID    = re.compile(r'中介费\s*[:：]\s*(\d+(?:\.\d+)?)')
 RE_SIZEU  = re.compile(r'(\d+(?:\.\d+)?)\s*([wWkK万])')
 
 MKT = {"SH":"上交所","SZ":"深交所"}
-# 我方产品模式（白名单兜底）：中信/粤财/财信信托…号
-RE_MINE_PAT = re.compile(r'((?:中信信托|粤财信托|财信信托)[一-龥A-Za-z0-9]{1,12}号)')
+# 我方产品模式（白名单兜底）：允许产品名里夹空格，如"粤财信托添添益 1号"
+RE_MINE_PAT = re.compile(r'((?:中信信托|粤财信托|财信信托)[一-龥A-Za-z0-9 ]{1,18}?号)')
 
 RE_SIZE_NJ = re.compile(r'(?<![.\d])(\d{3,6})\s*净价')          # 3000 净价100（前不接小数点，避免2.025误取025）
 RE_SIZE_NJ2= re.compile(r'(\d{3,6})\s+\d+(?:\.\d+)?\s*净价')  # 5000 1.98 净价
@@ -54,6 +57,8 @@ RE_DEALER_ORG = re.compile(r'交易商(?:代码|号)?\s*[:：]?\s*\d{6}\s*[（(]
 
 def get_size(rec):
     m=re.search(r'[\s，,、](\d{2,6})\s*约定号', rec)   # 规模紧接约定号前(如 26武发02 2000 约定号857)；i码在前会被空格约束排除
+    if m: return int(m.group(1))
+    m=re.search(r'(?:买入|卖出)\s*(\d{2,6})(?=\s+[一-龥A-Za-z0-9].{0,40}?(?:\d+M?\d*号|\d+号|集合资产管理计划|职业年金计划|企业年金计划|年金|组合|基金|资管|银行|信托|证券))', rec)
     if m: return int(m.group(1))
     m=re.search(r'(?<![.\d])(\d{3,6})\s+\d\.\d{2,4}', rec)  # 规模+收益率(如 5000 2.025 净价)
     if m: return int(m.group(1))
@@ -77,16 +82,31 @@ BADNAME_WORDS = (
 )
 # 债券简称：仅抓代码前后紧邻的债券命名形态，避免把 i 码尾号 / 交易动词误当简称
 NAMEPATS = [
+    re.compile(r'(?<![A-Za-z0-9一-龥])(\d{2}\s*[A-Z]{2,8}\s*[A-Z0-9]{0,4})(?![A-Za-z0-9一-龥])'),
     re.compile(r'(?<![A-Za-z0-9一-龥])(\d{2}\s*[一-龥]{1,6}\s*[A-Z]{1,3}\s*\d{1,3})(?![A-Za-z0-9一-龥])'),
     re.compile(r'(?<![A-Za-z0-9一-龥])(\d{2}\s*[一-龥]{1,6}\s*\d{2})(?![A-Za-z0-9一-龥])'),
     re.compile(r'(?<![A-Za-z0-9一-龥])([一-龥]{2,4}\s*[A-Z]{1,3}\s*\d{2,3})(?![A-Za-z0-9一-龥])'),
+    re.compile(r'(?<![A-Za-z0-9一-龥])([一-龥]{2,6}\s*\d{2,3}\s*[A-Z]?\d?)(?![A-Za-z0-9一-龥])'),
     re.compile(r'(?<![A-Za-z0-9一-龥])([一-龥]{1,3}\s*\d{2}\s*[一-龥]{1,3}\s*[A-Z]{1,3}\s*\d{1,3})(?![A-Za-z0-9一-龥])'),
 ]
 def _clean_name(s):
     nm=re.sub(r'\s+','',s)
-    if not nm or not re.search(r'[一-龥]', nm): return ""
+    if not nm: return ""
     if any(word in nm for word in BADNAME_WORDS): return ""
+    if not re.search(r'[一-龥]', nm) and not re.fullmatch(r'\d{2}[A-Z]{2,8}[A-Z0-9]{0,4}', nm):
+        return ""
     return nm if 4 <= len(nm) <= 12 else ""
+
+def _compact_text(s):
+    return re.sub(r'\s+','',s or "")
+
+def _find_spaced_text(rec, text, optional_hao=False):
+    if not text: return None
+    base=text[:-1] if optional_hao and text.endswith('号') else text
+    pat=r'[ \t]*'.join(re.escape(ch) for ch in base)
+    if optional_hao and text.endswith('号'):
+        pat+=r'(?:[ \t]*号)?'
+    return re.search(pat, rec)
 def _pick_name(seg, prefer='last'):
     hits=[]
     for pat in NAMEPATS:
@@ -117,11 +137,13 @@ def dealer_org(seg):
 RE_MULTI_SH = re.compile(r'(?:^|\n)[ \t]*([一-龥A-Za-z0-9][^\n]*?)(?:i\d{9})?[ \t（(]+(\d{1,6})\s*([wWkK万]?)[）)]?\s*[；;，, ]*约定号[：:\s]*(\d+)', re.M)
 # 上交所多拆(规模在前)：如 "1）1500万 广东省拾贰号职业年金计划海富通组合 约定号842"
 RE_MULTI_SH2= re.compile(r'(?:^|\n)\s*(?:\d{1,2}\s*[）)、.]\s*)?(\d{2,6})\s*([wWkK万])\s*([一-龥A-Za-z0-9（）()－\-]+?)\s*约定号[：:\s]*(\d+)', re.M)
-RE_MULTI_SZ = re.compile(r'(36\d{8})\s*([^\d\s：:][^\n]*?)\s*(?:[（(]?\s*(\d+)\s*[wW万][）)]?)?\s*约定号[：:\s]*(\d+)')
+RE_MULTI_SZ = re.compile(r'(36\d{8})\s*([^\d\s：:][^\n]*?)\s*(?:[（(]?\s*(\d+)\s*[wW万][）)]?)?\s*约定号[：:\s]*(\d+)')  # 主体码 名 [规模万] 约定号
 RE_SUBJ_LABEL = re.compile(r'^(?:交易)?(?:商)?主体(?:名称|简称|代码)?\s*[：:]\s*')  # 去名字前的标签
 RE_MULTI_SZ2= re.compile(r'([一-龥A-Za-z0-9]{2,16}号)\s*(\d+)\s*[wW万]\s*约定号\s*(\d+)')
 RE_MULTI_FZ = re.compile(r'([一-龥]{2,4}\d{1,2})\s*(\d+)\s*万[；;，, ]*约定号\s*(\d+)')   # 玺福19 500万 约定号18420842
 RE_SUBJ_NAME= re.compile(r'(36\d{8})\s*[^0-9]{0,4}?([一-龥A-Za-z0-9\-（）]+号)')            # 主体代码+全名
+RE_MULTI_B  = re.compile(r'([一-龥][一-龥A-Za-z0-9]*)\s+(\d+)\s*([wWkK万])\s+(36\d{8})\s+约定号[：:\s]*(\d+)')  # 名 规模单位 主体码 约定号(中邮式)
+RE_MULTI_A  = re.compile(r'(36\d{8})\s+([一-龥][一-龥A-Za-z0-9]*号)\s+(\d+)\s+[一-龥][^\n约]*?约定号[：:\s]*(\d+)')  # 主体码 名 规模 名 约定号(安阳式)
 def extract_multi(seg, mkt):
     out=[]
     if mkt=='上交所':
@@ -137,10 +159,20 @@ def extract_multi(seg, mkt):
                 nm=RE_SUBJ_LABEL.sub('', m.group(3)).strip(' \t：:，,；;（(').strip()
                 out.append((nm,'',sz,m.group(4),''))
     else:
-        for m in RE_MULTI_SZ.finditer(seg):
-            sz=int(m.group(3)) if m.group(3) else ''
-            nm=RE_SUBJ_LABEL.sub('', m.group(2)).strip(' \t：:，,；;（(').strip()
-            out.append((nm,m.group(1),sz,m.group(4),''))
+        for m in RE_MULTI_B.finditer(seg):      # 名 规模单位 主体码 约定号(中邮式)
+            v=int(m.group(2)); u=m.group(3).lower()
+            out.append((m.group(1), m.group(4), v*1000 if u=='k' else v, m.group(5), ''))
+        if len(out)<2:                          # 主体码 名 规模 名 约定号(安阳式)
+            out=[]
+            for m in RE_MULTI_A.finditer(seg):
+                out.append((m.group(2), m.group(1), int(m.group(3)), m.group(4), ''))
+        if len(out)<2:                          # 通用：主体码 名 [规模万] 约定号
+            out=[]
+            for m in RE_MULTI_SZ.finditer(seg):
+                sz=int(m.group(3)) if m.group(3) else ''
+                nm=RE_SUBJ_LABEL.sub('', m.group(2)).strip(' \t：:，,；;（(').strip()
+                nm,sz=split_trailing_size(nm,sz)      # 名尾若跟"规模区间整数"则切出来当规模
+                out.append((nm,m.group(1),sz,m.group(4),''))
         if len(out)<2:   # 方正式：短名+规模万+约定号 分列，主体代码/全称另行分列(标签不一)
             fz=RE_MULTI_FZ.findall(seg)
             if len(fz)>=2:
@@ -158,14 +190,17 @@ def extract_multi(seg, mkt):
                         if short in full:
                             subj=c; acct=full; break
                     out.append((acct,subj,int(size),yd,''))
-        if len(out)<2:   # 主体代码+名+规模逐行，约定号在末尾"+"连写(如东吴证券多产品)
-            prods=re.findall(r'(36\d{8})\s*([^\d\n][^\n]*?)\s*(\d+)\s*[wW万]', seg)
+        if len(out)<2:   # 主体码+名(规模可缺)，约定号在末尾"+"连写(华安/东吴式)；名须含"号"以排除我方主体
+            prods=[(c,n) for c,n in re.findall(r'(36\d{8})\s*([一-龥][^\n]*)', seg)
+                   if '号' in n and '交易主体名称' not in n]
+            szs =re.findall(r'(36\d{8})\s*[一-龥][^\n]*?(\d+)\s*[wW万]', seg)  # 若带规模单位则取之
+            szmap={c:int(s) for c,s in szs}
             ydm=re.search(r'约定号[：:\s]*([0-9]+(?:[+＋][0-9]+)+)', seg)
             if len(prods)>=2 and ydm:
                 yds=re.split(r'[+＋]', ydm.group(1))
                 if len(yds)==len(prods):
-                    out=[(RE_SUBJ_LABEL.sub('',n).strip(' \t：:，,；;（('), c, int(s), yds[i], '')
-                         for i,(c,n,s) in enumerate(prods)]
+                    out=[(RE_SUBJ_LABEL.sub('',n).strip(' \t：:，,；;（('), c, szmap.get(c,''), yds[i], '')
+                         for i,(c,n) in enumerate(prods)]
     # 规模在独立行(如临动GT01: 2000\n交易商代码…\n约定号)——产品都缺规模时，按顺序配独立数字行
     if out and all(not x[2] for x in out):
         szl=re.findall(r'(?:^|\n)[ \t]*(\d{3,6})[ \t]*万?[ \t]*(?=\n)', seg)
@@ -181,6 +216,106 @@ def extract_table(rec):
         out.append(dict(acct=m.group(1),size=int(m.group(2)),xingquan=m.group(3),
                         price=m.group(4),subj=m.group(5),yd=m.group(6)))
     return out if len(out)>=2 else []
+
+def split_trailing_size(name, cur_size):
+    """名字尾部若跟着一个'规模区间整数'(带空格、不粘号)，按数值切出来当规模。
+    数值区间约定：小数/≈100=净价或收益率(不当规模)；整数且≥50=规模(万)。"""
+    if cur_size!='' or not name: return name, cur_size
+    m=re.match(r'^(.*[一-龥号])\s+(\d{2,6})\s*([wWkK万]?)$', name.strip())
+    if m:
+        v=int(m.group(2)); u=(m.group(3) or '').lower()
+        if u or v>=50:            # 有单位，或数值达到规模区间
+            return m.group(1).strip(), (v*1000 if u=='k' else v)
+    return name, cur_size
+
+def _gen_prodname(line):
+    """从一行里取对方产品/账户名：去我方、去标签词，优先带'号/计划/组合/年金'的名"""
+    l=line
+    for w in WHITELIST: l=l.replace(w,' ')
+    l=RE_MINE_PAT.sub(' ', l)
+    l=re.sub(r'(交易主体名称|交易主体简称|主体名称|交易商名称)[：:]\s*','',l)
+    for m in re.finditer(r'[一-龥][一-龥A-Za-z0-9－\-（）]*?(?:\d+M?\d*号|\d+号|集合资产管理计划|职业年金计划|企业年金计划|年金|组合)', l):
+        nm=RE_SUBJ_LABEL.sub('', m.group(0)).strip('－- ')
+        if nm and not RE_NOTNAME.match(nm): return nm
+    return ''
+def _gen_size(line):
+    m=re.search(r'(\d+)\s*([wWkK万])', line)   # 优先显式单位
+    if m:
+        v=int(m.group(1)); u=m.group(2).lower()
+        return v*1000 if u=='k' else v
+    # 无单位：清掉 约定号串/主体码/i码/债券代码/日期/小数 后，取独立整数(不粘中文/号)当规模
+    l=re.sub(r'约(?:定号)?[：:\s]*\d[\d+＋、，,\s]*', ' ', line)
+    l=re.sub(r'36\d{8}|i\d{9}|20\d{6}|\d{6}\.[A-Z]{2}|\d+\.\d+', ' ', l)
+    m=re.search(r'(?<![一-龥\d.])(\d{2,6})(?![号\d.])', l)
+    return int(m.group(1)) if m else ''
+RE_LEAD_ENUM = re.compile(r'^[ \t]*(?:\d{1,2}\s*[.、）)．]|[①②③④⑤⑥⑦⑧⑨⑩]|[a-zA-Z]\s*[.、)])\s*')
+def _strip_leading_enum(line):
+    """去掉行首编号/项目符号（1. / a) / ① 等），这类前缀在 T4/T5/T8 的清单块里反复出现，
+    属于跟哪个模板无关的通用噪声，不应该每条正则各自兼容一遍。"""
+    return RE_LEAD_ENUM.sub('', line)
+
+def extract_splits_generic(seg):
+    """通用兜底拆单：以约定号为锚，一个约定号一笔；每笔就近取 主体码/对方名/规模(仅显式单位)。"""
+    lines=[_strip_leading_enum(l) for l in seg.split('\n') if l.strip()]
+    # A) 集中式：约定号 A+B+C…（产品分散在各行），按序配对
+    mj=re.search(r'约(?:定号)?[：:\s]*(\d+(?:\s*[+＋、，,]\s*\d+)+)', seg)
+    if mj:
+        yds=[y.strip() for y in re.split(r'[+＋、，,]', mj.group(1))]
+        prods=[]
+        for l in lines:
+            if re.search(r'约(?:定号)?[：:\s]*\d+\s*[+＋]', l): continue   # 跳过集中约定号那行
+            subj=re.search(r'(36\d{8})', l); nm=_gen_prodname(l)
+            if subj or nm: prods.append((nm, subj.group(1) if subj else '', _gen_size(l)))
+        if len(prods)>=2 and len(prods)==len(yds):
+            return [(p[0],p[1],p[2],yds[i],'') for i,p in enumerate(prods)]
+    # B) 逐行式：每行各带自己的约定号
+    per=[]
+    for l in lines:
+        ym=re.search(r'约(?:定号)?[：:\s]*(\d+)(?![+＋\d])', l)
+        if not ym: continue
+        subj=re.search(r'(36\d{8})', l)
+        per.append((_gen_prodname(l), subj.group(1) if subj else '', _gen_size(l), ym.group(1), ''))
+    return per if len(per)>=2 else []
+
+def _scan_block_fields(block):
+    """块内不认字段顺序、不认标签具体措辞，只按字段"长相"扫描：主体码/对方名/规模/交易商代码/交易员代码。
+    这是所有"多笔"模板(T3/T4/T5/T8)共享的底层不变量——一个约定号对应一段字段，
+    字段本身可以用统一的"长相"规则找到，不需要为每种标签排列各写一条专用正则。"""
+    subj=''
+    m=re.search(r'(36\d{8})', block)
+    if m: subj=m.group(1)
+    dealer=''
+    m=RE_DEALER.search(block)
+    if m: dealer=m.group(1)
+    trader=''
+    m=RE_TRADER.search(block) or RE_TRADER2.search(block)
+    if m: trader=m.group(1)
+    return _gen_prodname(block), subj, _gen_size(block), dealer, trader
+
+def extract_splits_by_yd_anchor(seg):
+    """通用兜底拆单(第二层)：以约定号为唯一锚点切块，块内不分先后顺序扫描字段。
+    仅在专用正则(RE_MULTI_*)和逐行式兜底(extract_splits_generic)都没命中时才启用，
+    用来接住样本外没见过的标签排列/命名方式，同时不影响已经调好的样本内匹配。"""
+    stripped='\n'.join(_strip_leading_enum(l) for l in seg.split('\n'))
+    matches=[m for m in RE_YD.finditer(stripped) if not re.search(r'[+＋、，,]', m.group(1))]
+    if len(matches)<2: return []
+    out=[]; prev_end=0
+    for m in matches:
+        block=stripped[prev_end:m.end()]
+        prev_end=m.end()
+        name,subj,size,dealer,trader=_scan_block_fields(block)
+        if not (subj or name): return []   # 块内连主体信息都没有，说明不是这种结构，整体放弃
+        out.append((name,subj,size,m.group(1),trader))
+    return out
+
+def extract_all_yds(rec):
+    """逐行提取真实约定号，避免把'交易主体代码/简称/量/约定号：'这类表头误当成约定号值。"""
+    yds=[]
+    for line in rec.splitlines():
+        line=_strip_leading_enum(line)
+        for m in RE_YD_LINE.finditer(line):
+            yds.extend(x.strip() for x in re.split(r'[+＋、，,]', m.group(1)) if x.strip())
+    return yds
 
 def extract_paren_products(rec):
     """括号内'+'连写的产品串：(西藏信托 长盈稳健25号1200+西藏信托 善盈长盈稳健42号1600+...) → [(名,规模)]"""
@@ -223,16 +358,19 @@ def find_mine(rec):
     for w in WHITELIST:
         i=rec.find(w)
         if i>=0 and (pos<0 or i<pos): best,pos=w,i
+        else:
+            m=_find_spaced_text(rec, w)
+            if m and (pos<0 or m.start()<pos): best,pos=w,m.start()
     if best: return best,pos
     # 兜底1：核心词
     for w in WHITELIST:
         core=re.sub(r'^(中信信托|粤财信托|财信信托)','',w)
-        i=rec.find(core)
-        if i>=0 and (pos<0 or i<pos): best,pos=w,i
+        m=_find_spaced_text(rec, core, optional_hao=True)
+        if m and (pos<0 or m.start()<pos): best,pos=w,m.start()
     if best: return best,pos
     # 兜底2：模式识别我方产品（中信/粤财/财信信托…号），对方多为银行/基金/券商/年金，不会误匹配
     m=RE_MINE_PAT.search(rec)
-    if m: return m.group(1), m.start()
+    if m: return _compact_text(m.group(1)), m.start()
     return best,pos
 
 def direction_and_split(rec, mine_pos):
@@ -260,6 +398,9 @@ def direction_and_split(rec, mine_pos):
     j=rec.find("买入")
     if j>=0 and rec[j:j+3]!="买入方":
         return ("卖出", rec[j+2:], rec[:j]) if mine_pos>j else ("买入", rec[:j], rec[j+2:])
+    # 只有卖方/卖家先发标记(无买方、无出给)：我方=卖方，对方靠拆单/机构映射补
+    if re.search(r'卖方|卖家先发|卖出先发|卖出', rec):
+        return "卖出", rec, rec
     return "", rec, ""
 
 # 常见交易商代码→机构简称（原文未拼出机构名时兜底，按需维护）
@@ -270,6 +411,7 @@ DEALER_NAME={
     "006281":"太平基金","000128":"兴业证券","000001":"国信证券","000612":"国泰海通",
     "000058":"华鑫证券","000695":"申港证券","000316":"第一创业","007101":"华泰资产",
     "007130":"英大资产","000402":"东方财富","000025":"光大证券","006223":"宝惠",
+    "000657":"中邮证券",
 }
 def org_near(rec, code6):
     """按6位交易商代码就近取机构名（前后各14字）；取不到则查代码映射"""
@@ -304,6 +446,7 @@ def person_name(seg):
         r'交易员\s*名称\s*[：:]\s*([一-龥]{2,4})(?![一-龥])',                                  # 交易员名称：张锐
         r'交易员\s*[：:]\s*([一-龥]{2,4})(?![一-龥0-9A-Z])',                                   # 交易员：谭骅
         r'i\d{9}\s+([一-龥]{2,4})(?![一-龥])',                                                # 无标签 i码后名：i020038603 吴静静
+        r'交易员代码\s*[:：]?\s*[0-9A-Z]{7,8}([一-龥]{2,4})(?![一-龥])',                        # 码紧贴名：006V0014蒋佳玮
     ]
     for p in pats:
         for m in re.finditer(p, seg):
@@ -322,13 +465,11 @@ def pick_prod(seg):
 
 def expand_splits(rec):
     """返回 [(规模万, 约定号)] 列表；支持 + 连写"""
-    ydm=RE_YD.search(rec)
-    yds=[]
-    if ydm:
-        yds=[x.strip() for x in re.split(r'[+＋、，,]', ydm.group(1))]
-    # 规模：找 a+b+c（含括号内 (1000+1000)）
+    yds=extract_all_yds(rec)
+    # 规模：找 a+b+c（含括号内 (1000+1000)）——先去掉"约定号 XX+YY"整串，避免把约定号当规模
+    rec_wo_yd=RE_YD.sub(' ', rec)
     sizes=[]
-    plus=re.search(r'(\d+(?:\s*[+＋]\s*\d+)+)', rec)
+    plus=re.search(r'(\d{2,6}(?:\s*[+＋]\s*\d{2,6})+)', rec_wo_yd)
     if plus:
         sizes=[int(x) for x in re.split(r'[+＋]', plus.group(1))]
     return yds, sizes
@@ -349,6 +490,9 @@ def parse_record(rec):
     else:
         pm2=RE_PRICE2.search(rec.replace(code,''))
         if pm2: price=pm2.group(1)
+        else:
+            pm3=RE_PRICE3.search(rec)
+            if pm3: price=pm3.group(1)
     ym=RE_YIELD.search(rec); yld = ym.group(1)+'%' if ym else ""
     xk=re.search(r'行权[^\d]{0,3}(\d+\.\d+)|(\d+\.\d+)\s*行权', rec)  # "行权 2.2"或"2.08行权"，取小数(收益率)
     xingquan = (xk.group(1) or xk.group(2)) if xk else ""
@@ -409,6 +553,12 @@ def parse_record(rec):
 
     multibond=extract_multibond(rec)
     multi=extract_multi(rec, mkt)
+    multi_from_anchor=False
+    if not multi:                       # 专用格式都没中 → 通用兜底(约定号锚点)接住样本外版式
+        multi=extract_splits_generic(otherseg)
+    if not multi:                       # 仍未命中 → 第二层兜底：纯约定号切块+字段"长相"扫描，不认标签措辞/顺序
+        multi=extract_splits_by_yd_anchor(otherseg)
+        multi_from_anchor=True
     yds,sizes=expand_splits(rec)
     rows=[]
     def mk(size, yd, acct=None, subj=None):
@@ -453,29 +603,41 @@ def parse_record(rec):
     if multi:
         odc,otc=other_codes(rec, mine, mpos)
         short = org_near(rec, odc) if mkt=="深交所" else ""
+        if not o_person: o_person=person_name(rec)   # 交易员从整条记录兜底(如 交易员号:00H10004 张跃曦)
         sh_tcode=""                       # 上交所共享i码(对方段，排除我方)
         if mkt=="上交所":
             my_i=RE_ICODE.search(mineseg)
             my_i=my_i.group(0) if my_i else ""
             for m in RE_ICODE.finditer(otherseg):
                 if m.group(0)!=my_i: sh_tcode=m.group(0); break
-        # 若各产品规模都缺、但有总额且能整除份数 → 按份数均分
-        even=""
-        if all(not x[2] for x in multi):
-            tot=get_size(rec)
-            if isinstance(tot,int) and tot % len(multi)==0: even=tot//len(multi)
         for acct,subj,sz,yd,tcode in multi:
-            r=mk(sz,yd,acct=acct,subj=subj)
+            r=mk(sz,yd,acct=acct,subj=subj)   # 规模只做识别，缺失即留空，不计算
             r["对手方交易员代码"]= tcode or sh_tcode or otc
             if mkt=="深交所":
                 if odc: r["对手方交易商代码"]=odc
                 if short: r["对手方交易商简称"]=short
             r["过券"]= short or pick_org(otherseg) or acct   # 过券优先机构
-            if not sz and even:
-                r["交易规模万"]=even; r["备注"]="规模原文未分列，按总额均分，请核"
-            elif not sz:
-                r["备注"]="规模未在原文分列，需人工确认"
+            if not sz: r["备注"]="规模原文未分列，需人工确认"
             rows.append(r)
+        total_yd=len(extract_all_yds(rec))
+        # 校验1：拆单笔数应等于约定号总数——抓"匹配到了但笔数不对"的错位
+        if total_yd and len(rows)!=total_yd:
+            for r in rows:
+                if not r["备注"]: r["备注"]="拆单笔数与约定号数量不一致，需人工核对"
+        # 校验2：同一记录里多笔命中同一个交易主体代码——抓"正则重复捕获同一段文本"这种错位
+        subjs=[subj for _,subj,_,_,_ in multi if subj]
+        if subjs and len(set(subjs))<len(subjs):
+            for r in rows:
+                if not r["备注"]: r["备注"]="拆单内多笔命中同一交易主体代码，疑似识别错位，需人工核对"
+        # 校验3：非锚点兜底给出的结果，拿约定号锚点扫描器再读一遍做独立交叉核对——抓"专用正则匹配上了但取值不对"
+        if not multi_from_anchor:
+            anchor_check=extract_splits_by_yd_anchor(otherseg)
+            if anchor_check:
+                subj_a={s for _,s,_,_,_ in multi if s}
+                subj_b={s for _,s,_,_,_ in anchor_check if s}
+                if subj_a and subj_b and subj_a!=subj_b:
+                    for r in rows:
+                        if not r["备注"]: r["备注"]="与约定号锚点兜底的独立读取结果不一致，需人工核对"
         return rows
     if sizes and yds and len(sizes)==len(yds):
         for s,y in zip(sizes,yds): rows.append(mk(s,y))
@@ -497,8 +659,24 @@ def split_records(text):
             raw[-1]+='\n'+chunk
     # 二次切
     recs=[]
+    carry_prefix=""
+    carry_bond_code=""
     for chunk in raw:
         lines=[l for l in chunk.split('\n') if l.strip()]
+        first_bond_line=next((i for i,l in enumerate(lines) if RE_BOND.search(l)), -1)
+        first_bond_code=""
+        if first_bond_line >= 0:
+            m=RE_BOND.search(lines[first_bond_line])
+            if m: first_bond_code=m.group(0)
+        if first_bond_line > 0:
+            carry_prefix='\n'.join(lines[:first_bond_line])
+            carry_bond_code=first_bond_code
+        elif carry_prefix and first_bond_code and first_bond_code == carry_bond_code:
+            chunk=carry_prefix + '\n' + chunk
+            lines=[l for l in chunk.split('\n') if l.strip()]
+        elif first_bond_code and carry_bond_code and first_bond_code != carry_bond_code:
+            carry_prefix=""
+            carry_bond_code=""
         # a) 每行都自成一笔(各含债券代码+约定号)→按行拆(如上交所两笔挨着无空行)
         if len(lines)>1 and all(RE_BOND.search(l) and RE_YD.search(l) for l in lines):
             recs.extend(lines); continue

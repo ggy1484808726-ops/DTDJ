@@ -31,10 +31,6 @@
         overflow-x: hidden;
       }
 
-      body.is-loading {
-        overflow: hidden;
-      }
-
       .page-shell {
         width: min(1200px, calc(100vw - 40px));
         margin: 24px auto 32px;
@@ -312,67 +308,6 @@
         font-size: 14px;
       }
 
-      .loading-mask {
-        position: fixed;
-        inset: 0;
-        z-index: 2000;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 20px;
-        background: rgba(241, 246, 255, 0.72);
-        backdrop-filter: blur(8px);
-        opacity: 0;
-        visibility: hidden;
-        transition: opacity 0.18s ease, visibility 0.18s ease;
-      }
-
-      .loading-mask.is-visible {
-        opacity: 1;
-        visibility: visible;
-      }
-
-      .loading-card {
-        min-width: 240px;
-        padding: 26px 28px;
-        border: 1px solid rgba(201, 215, 243, 0.95);
-        border-radius: 22px;
-        background: rgba(255, 255, 255, 0.96);
-        box-shadow: 0 20px 40px rgba(31, 42, 68, 0.14);
-        text-align: center;
-      }
-
-      .loading-spinner {
-        width: 46px;
-        height: 46px;
-        margin: 0 auto 16px;
-        display: block;
-        border: 4px solid #d8e3fb;
-        border-top-color: #2f6fec;
-        border-radius: 50%;
-        animation: spin 0.85s linear infinite;
-      }
-
-      .loading-title {
-        margin: 0 0 6px;
-        font-size: 18px;
-        font-weight: 600;
-        color: var(--text-main);
-      }
-
-      .loading-desc {
-        margin: 0;
-        font-size: 13px;
-        color: var(--text-sub);
-        line-height: 1.6;
-      }
-
-      @keyframes spin {
-        to {
-          transform: rotate(360deg);
-        }
-      }
-
       @media (max-width: 900px) {
         .page-shell {
           width: calc(100vw - 20px);
@@ -451,14 +386,6 @@
       </div>
     </main>
 
-    <div id="loadingMask" class="loading-mask" hidden>
-      <div class="loading-card" role="status" aria-live="polite" aria-busy="true">
-        <span class="loading-spinner" aria-hidden="true"></span>
-        <p class="loading-title">识别中</p>
-        <p class="loading-desc">正在执行代投代缴识别，请稍候。</p>
-      </div>
-    </div>
-
     <script>
       const DEFAULT_COLUMNS = [
         "交易方向",
@@ -496,7 +423,6 @@
       const resultBody = document.getElementById("resultBody");
       const resultSummary = document.getElementById("resultSummary");
       const messageEl = document.getElementById("message");
-      const loadingMask = document.getElementById("loadingMask");
       const runtimeNotice = document.getElementById("runtimeNotice");
 
       let columns = [...DEFAULT_COLUMNS];
@@ -575,9 +501,6 @@
       }
 
       function setLoading(isLoading) {
-        document.body.classList.toggle("is-loading", isLoading);
-        loadingMask.hidden = !isLoading;
-        loadingMask.classList.toggle("is-visible", isLoading);
         sourceText.disabled = isLoading;
         recognizeButton.disabled = isLoading;
         clearButton.disabled = isLoading;

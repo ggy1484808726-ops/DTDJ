@@ -46,22 +46,76 @@ class BondNameExtractionTests(unittest.TestCase):
                 rows = extractor.parse_text(text)
                 self.assertEqual(rows[0]["债券简称"], expected)
 
-    def test_table_style_rows_are_split(self):
-        text = (
-            "20260703 5+5 24科创债 某产品 123456.SH 1000 行权 2.2 99 某我方 3600001234 7012345\n"
-            "20260703 5+5 24科创债 某产品2 123456.SH 2000 行权 2.3 100 某我方 3600001235 7012346"
-        )
+    def test_all_caps_and_chinese_digit_names_are_kept(self):
+        samples = {
+            "245542.SH 26SACF02 1000 净价100 中信信托华盈添利4号 i020070111 出给山西证券 i020005011 约定号 856": "26SACF02",
+            "244885.SH 26CHNG3K 净价100 1.6E 广发证券【Z06308】to 长城证券Z13311 约定号222": "26CHNG3K",
+            "268215.SH 金玉优01 4000 净价100 粤财信托添添益 1号 Z08705 出给 华润信托瑞合5号 中信Z06308 约定号 907": "金玉优01",
+        }
+        for text, expected in samples.items():
+            with self.subTest(expected=expected):
+                rows = extractor.parse_text(text)
+                self.assertEqual(rows[0]["债券简称"], expected)
+
+    def test_mine_account_fuzzy_forms_are_normalized(self):
+        samples = {
+            "要素已定\n信昱13\n244885.SH 26CHNG3K 净价100 1.6E 广发证券【Z06308】to 长城证券Z13311\n约定号222": "中信信托信昱13号",
+            "268215.SH 金玉优01 4000 净价100 粤财信托添添益 1号 Z08705 出给 华润信托瑞合5号 中信Z06308 约定号 907": "粤财信托添添益1号",
+            "268215.SH 金玉优01 7000 净价100 粤财信托添盈 1号 Z08705 出给 华润信托瑞合10号 中信Z06308 约定号 909": "粤财信托添盈1号",
+        }
+        for text, expected in samples.items():
+            with self.subTest(expected=expected):
+                rows = extractor.parse_text(text)
+                self.assertEqual(rows[0]["我方账户"], expected)
+
+    def test_multi_rows_header_yd_is_not_misread_as_real_yd(self):
+        text = """①买入 4.96Y 520260.SZ 26文体02 100净价 100净价 2000W 07.02交易所 广发证券 to 世纪证券资管 i020000604
+买入方
+交易商代码：000039 世纪证券
+交易员号: 00130016 李南阳
+交易主体代码/简称/量/约定号：
+3600062601 鑫享世成24M013号 500w 约定号12211221
+3600063165 鑫享世成24M014号 500w 约定号13311331
+3600051079 兴瑞世成16号 250w 约定号14411441
+3600064045 兴瑞世成55号 750w 约定号15511551
+卖出方
+中信信托信昱11号
+交易商号: 000262
+交易员号：007A0001
+交易主体代码：3600000001
+交易主体名称：中信证券股份有限公司机构经纪
+卖家先发"""
+        rows = extractor.parse_text(text)
+        self.assertEqual(len(rows), 4)
+        self.assertTrue(all(not row["备注"] for row in rows))
+        self.assertEqual([row["约定号"] for row in rows], ["12211221", "13311331", "14411441", "15511551"])
+
+    def test_plus_zero_date_is_not_treated_as_size_split(self):
+        text = """2026/7/1 +0 520274.SZ 26豫峡K3 净价100 3000w 广发 to 首创
+首创证券
+交易商代码：000613
+交易主体代码： 3600064456 创赢JS01号 约定号 11111111
+交易主体代码： 3600064148 创赢XY01号 约定号 22222222
+交易主体代码： 3600011496 创赢增利2号 约定号 33333333
+交易员号：00H10004 张跃曦
+中信信托信昱11号 交易商号: 000262 交易员号：007A0001 交易主体代码：3600000001 交易主体名称：中信证券股份有限公司机构经纪 卖出 卖出先发"""
+        yds, sizes = extractor.expand_splits(text)
+        self.assertEqual(yds, ["11111111", "22222222", "33333333"])
+        self.assertEqual(sizes, [])
+
+    def test_shared_prefix_rows_can_identify_mine_price_and_size(self):
+        text = """0414 云夏3号 Z07119 卖出 2.564% 99.814
+281788.SH 26溧供Y1 买入 1000 中粮佳盈1号 Z08705 约定号 788
+
+281788.SH 26溧供Y1 买入 1000 广粤尊享77号 Z08705 约定号 789"""
         rows = extractor.parse_text(text)
         self.assertEqual(len(rows), 2)
-        self.assertEqual(rows[0]["对方账户"], "某产品")
-        self.assertEqual(rows[0]["行权收益率"], "2.2")
-        self.assertEqual(rows[0]["约定号"], "7012345")
-        self.assertEqual(rows[1]["对方账户"], "某产品2")
-        self.assertEqual(rows[1]["行权收益率"], "2.3")
-        self.assertEqual(rows[1]["约定号"], "7012346")
-
-    def test_dealer_code_mapping_fallback_still_works(self):
-        self.assertEqual(extractor.org_near("只有代码 000032 没有机构全称", "000032"), "广发证券")
+        self.assertEqual(rows[0]["我方账户"], "中粮佳盈1号")
+        self.assertEqual(rows[1]["我方账户"], "广粤尊享77号")
+        self.assertEqual(rows[0]["交易规模万"], 1000)
+        self.assertEqual(rows[1]["交易规模万"], 1000)
+        self.assertEqual(rows[0]["原始净价"], "99.814")
+        self.assertEqual(rows[1]["原始净价"], "99.814")
 
 
 if __name__ == "__main__":
