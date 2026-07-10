@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import sys
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request
 
 BASE_DIR = Path(__file__).resolve().parent
 SCRIPT_PATH = BASE_DIR / "提取脚本.py"
+DEPENDENCY_PATHS = (BASE_DIR / "counterparty_fields.py",)
 _extractor = None
-_extractor_mtime_ns = None
+_extractor_signature = None
 
 VISIBLE_COLUMNS = [
     "交易方向",
@@ -38,6 +40,7 @@ VISIBLE_COLUMNS = [
 
 
 def load_extractor():
+    sys.modules.pop("counterparty_fields", None)
     spec = importlib.util.spec_from_file_location("bond_extractor", SCRIPT_PATH)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"无法加载提取脚本: {SCRIPT_PATH}")
@@ -48,12 +51,14 @@ def load_extractor():
 
 
 def get_extractor():
-    global _extractor, _extractor_mtime_ns
+    global _extractor, _extractor_signature
 
-    current_mtime_ns = SCRIPT_PATH.stat().st_mtime_ns
-    if _extractor is None or _extractor_mtime_ns != current_mtime_ns:
+    current_signature = tuple(
+        path.stat().st_mtime_ns for path in (SCRIPT_PATH, *DEPENDENCY_PATHS)
+    )
+    if _extractor is None or _extractor_signature != current_signature:
         _extractor = load_extractor()
-        _extractor_mtime_ns = current_mtime_ns
+        _extractor_signature = current_signature
 
     return _extractor
 

@@ -7,6 +7,25 @@
 import re, glob, os
 from datetime import date
 
+import counterparty_fields as counterparty
+from counterparty_fields import (
+    DEALER_NAME,
+    RE_ORG,
+    clean_counterparty_candidate as _clean_counterparty_candidate,
+    dealer_name_from_code,
+    extract_full_account_from_line,
+    extract_labeled_account,
+    extract_role_account,
+    extract_subject_name,
+    find_known_dealer_code,
+    is_valid_counterparty_account,
+    looks_like_account_name,
+    looks_like_plain_org,
+    normalize_visible_org,
+    pick_org,
+    split_org_from_account,
+)
+
 OUTPUT_COLUMNS = [
     "市场","交易方向","交易日期","债券代码","债券简称","到期收益率","行权收益率",
     "原始净价","交易净价","交易规模万","我方账户","对方账户","过券","中介","中介费",
@@ -22,8 +41,6 @@ WHITELIST = [
     "中粮佳盈1号","广粤尊享77号",
 ]
 MINE_PREFIXES = ("中信信托","粤财信托","财信信托")
-ACCOUNT_HINT_WORDS = ("号","计划","组合","基金","年金","资管","产品","私募")
-ORG_HINT_WORDS = ("证券资管","证券自营","证券机构经纪","证券","资管","基金","信托","银行","期货","养老","保险","人寿","投顾","财富","资产")
 
 
 # 全角 ASCII（数字/字母/标点，U+FF01~U+FF5E）→半角：文本经不同系统/输入法转发后
@@ -63,13 +80,22 @@ for _name in WHITELIST:
 MINE_ALIASES = sorted(MINE_ALIAS_TO_CANON, key=len, reverse=True)
 
 # ========== 2. 字段正则 ==========
-RE_BOND   = re.compile(r'(\d{6})\.(SH|SZ)', re.I)   # 忽略大小写：兼容 .sh/.sz 手打小写后缀
+RE_BOND   = re.compile(
+    r'(?:(\d{6})\s*[.\-/]?\s*(SH|SZ)|(SH|SZ)\s*[:.\-/]?\s*(\d{6}))',
+    re.I,
+)  # 兼容 245555.SH / 245555-SH / 245555 SH / SH:245555
 RE_PRICE  = re.compile(r'净价\s*(\d{2,3}(?:\.\d+)?)')
 RE_PRICE2 = re.compile(r'(?<!\d)(1\d{2}(?:\.\d+)?)(?!\d)')      # 兜底 100~199
 RE_PRICE3 = re.compile(r'\d+(?:\.\d+)?%\s*(\d{2,3}(?:\.\d+)?)')  # 收益率后紧跟净价，如 2.564% 99.814
+RE_ORIG_PRICE = re.compile(r'(?:原始净价|委托净价)\s*[:：]?\s*(\d{2,3}(?:\.\d+)?)')
+RE_DEAL_PRICE = re.compile(r'(?:交易净价|成交净价)\s*[:：]?\s*(\d{2,3}(?:\.\d+)?)')
 RE_YIELD  = re.compile(r'(\d+(?:\.\d+)?)\s*%')
 RE_YIELD2 = re.compile(r'(?<![\d.])([12]\.\d{2,3})(?![\d%])')   # 裸 1.xx/2.xx
+RE_MATURITY_YIELD = re.compile(r'(?<!行权)(?:(?:到期)?收益率|YTM)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*(%)?', re.I)
+RE_EXERCISE_YIELD = re.compile(r'(?:行权收益率|行权YTM|行权)\s*[:：]?\s*(\d{1,2}(?:\.\d+)?)(?![\d.])\s*(%)?', re.I)
+RE_BOND_NAME_LABEL = re.compile(r'(?:债券简称|券简称|债券名称)\s*[:：]?\s*([A-Za-z0-9一-龥－\-]+)')
 RE_DATEF  = re.compile(r'(20\d{2})\s*[-./]\s*(\d{1,2})\s*[-./]\s*(\d{1,2})')
+RE_DATEZH = re.compile(r'(20\d{2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?')
 RE_DATES  = re.compile(r'(?<!\d)(\d{1,2})[.\-/](\d{1,2})\s*交易所')
 RE_DATEC  = re.compile(r'(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)')
 RE_DATES2 = re.compile(r'(?<!\d)(\d{1,2})/(\d{1,2})(?!\d)')
@@ -83,6 +109,7 @@ RE_SETTLE_EXCH  = re.compile(r'(?:上交所|深交所|交易所)[ ]*[+＋](\d{1,
 RE_SETTLE_MD    = re.compile(r'(?<!\d)(?:20\d{2}[./-])?\d{1,2}[./-]\d{1,2}[ ]*[+＋](\d{1,2})(?!\d)')
 RE_SETTLE_8D    = re.compile(r'(?<!\d)20\d{6}[ ]*[+＋](\d{1,2})(?!\d)')
 RE_SETTLE_4D    = re.compile(r'(?<!\d)\d{4}[ ]*[+＋](\d{1,2})(?!\d)')
+RE_SETTLE_T     = re.compile(r'(?<![A-Za-z0-9])T\s*[+＋]\s*(\d{1,2})(?!\d)', re.I)
 RE_T8_MARKER    = re.compile(
     r'^(?:【?[^\n]{0,24}(?:深交所(?:交易)?信息|深交所要素)】?|[^\n]{0,24}深交所(?:交易)?信息[:：]?)\s*$',
     re.M,
@@ -91,8 +118,8 @@ RE_YD     = re.compile(r'约(?:定号)?[：:\s]*([0-9]+(?:\s*[+＋、，,]\s*[0-
 RE_YD_ALL = re.compile(r'\b(\d{3,10})\b')
 RE_YD_LINE= re.compile(r'约(?:定号)?[：:\s]*([0-9]{3,10}(?:\s*[+＋、，,]\s*[0-9]{3,10})*)')
 RE_DEALER = re.compile(r'交易商(?:代码|号)?\s*[:：]?\s*(\d{6})')
-RE_TRADER = re.compile(r'交易员(?:代码|号)?\s*[:：]?\s*([0-9A-Z]{8})')
-RE_TRADER2= re.compile(r'交易员(?:及交易员代码|代码|名称|号)?\s*[：:]?\s*[一-龥]{2,4}\s*[（(]?\s*([0-9A-Z]{7,8})')  # 名在码前：赵越 00H00010 / 付玉 007Z0039
+RE_TRADER = re.compile(r'交易员(?:代码|号)?\s*[:：]?\s*([0-9A-Z]{8})(?![0-9A-Z])', re.I)
+RE_TRADER2= re.compile(r'交易员(?:及交易员代码|代码|名称|号)?\s*[：:]?\s*[一-龥]{2,4}\s*[（(]?\s*([0-9A-Z]{7,8})(?![0-9A-Z])', re.I)  # 名在码前：赵越 00H00010 / 付玉 007Z0039
 RE_SUBJ   = re.compile(r'(?:交易(?:商)?主体(?:代码)?)\s*[:：]?\s*(36\d{8})')
 RE_SUBJNM = re.compile(r'交易主体名称\s*[:：]?\s*([一-龥A-Z0-9\-（）()]+)')
 # 我方经纪主体身份的固定四件套(交易商代码+交易员代码+交易主体代码+以"机构经纪"结尾的主体名称)，
@@ -104,17 +131,11 @@ RE_SELF_BROKER_BLOCK = re.compile(
     r'交易商(?:代码|号)?\s*[：:]?\s*\d{6}[\s\S]{0,30}?'
     r'交易员(?:代码|号)?\s*[：:]?\s*[0-9A-Z]{7,8}[\s\S]{0,30}?'
     r'交易(?:商)?主体代码\s*[：:]?\s*(36\d{8})[\s\S]{0,30}?'
-    r'交易(?:商)?主体(?:全称|名称)\s*[：:]\s*[一-龥]{2,16}机构经纪'
+    r'交易(?:商)?主体(?:全称|名称)\s*[：:]\s*[一-龥]{2,16}机构经纪',
+    re.I,
 )
-RE_ICODE  = re.compile(r'i\d{9}')
+RE_ICODE  = re.compile(r'i\d{9}', re.I)
 RE_PERSON = re.compile(r'[（(]([一-龥]{2,4})[)）]')
-RE_ORG    = re.compile(r'([一-龥]{2,10}(?:证券资管|证券自营|证券机构经纪|证券|资管|基金|信托|银行|期货|养老|保险|人寿|投顾|财富|资产))')
-# 产品/账户名后缀：数字编号(N号)后面常常还接一段"集合资产管理计划/资产管理计划/职业年金计划/个月"这类
-# 描述性尾巴(如"建盈增利1号集合资产管理计划")，把这些尾巴放进"N号"分支自身的可选后缀里，
-# 不能只放在整个后缀候选列表的并列项里——非贪婪前缀一旦在"N号"处就能凑出一个更短的整体匹配，
-# 会在还没扫到"集合资产管理计划"这个并列分支前就提前收尾，把长名字齐腰截断
-_PROD_TAIL = r'(?:\d{1,3}个月|集合资产管理计划|资产管理计划|职业年金计划|企业年金计划|年金计划)?'
-RE_PROD   = re.compile(r'([一-龥A-Za-z0-9－\-（）()·]{2,60}?(?:\d+M?\d*号' + _PROD_TAIL + r'|\d+号' + _PROD_TAIL + r'|集合资产管理计划|资产管理计划|职业年金计划|企业年金计划|年金计划|组合|基金|私募基金))')
 RE_INIT   = re.compile(r'(卖方发单|买方发单|卖家先发|买家先发|卖出先发|买入先发)')
 RE_MID    = re.compile(r'中介费\s*[:：]\s*(\d+(?:\.\d+)?)')
 # 规模数字：支持千分位逗号写法，如 "1,000w"（先试逗号分组，再退化到普通整数/小数）
@@ -123,11 +144,6 @@ RE_SIZEU  = re.compile(r'(?<![A-Za-z0-9.])(' + _SIZE_NUM + r')\s*([wW万]元?)(?
 RE_SIZEK  = re.compile(r'(?<![A-Za-z0-9.])(' + _SIZE_NUM + r')\s*([kK])(?:\s*[wW])?元?(?![A-Za-z0-9])')
 RE_SIZEE  = re.compile(r'(?<![A-Za-z0-9.])(' + _SIZE_NUM + r')\s*([eE亿]元?)(?![A-Za-z0-9])')
 RE_SIZE_TOKEN = re.compile(r'(?<![A-Za-z0-9.])(' + _SIZE_NUM + r')\s*(亿元?|[eE]元?|[kK](?:\s*[wW])?元?|[wW万]元?)(?![A-Za-z0-9])')
-RE_T8_MARKER = re.compile(
-    r'^(?:【?[^\n]{0,24}(?:深交所(?:交易)?信息|深交所要素)】?|[^\n]{0,24}深交所(?:交易)?信息[:：]?)\s*$',
-    re.M,
-)
-
 MKT = {"SH":"上交所","SZ":"深交所"}
 # 我方产品模式（白名单兜底）：允许产品名里夹空格，如"粤财信托添添益 1号"
 RE_MINE_PAT = re.compile(r'((?:中信信托|粤财信托|财信信托)[一-龥A-Za-z0-9 ]{1,18}?号)')
@@ -136,6 +152,22 @@ RE_SIZE_NJ = re.compile(r'(?<![.\d])(\d{3,6})\s*净价')          # 3000 净价1
 RE_SIZE_NJ2= re.compile(r'(\d{3,6})\s+\d+(?:\.\d+)?\s*净价')  # 5000 1.98 净价
 RE_SIZE_PR = re.compile(r'(\d{3,6})\s+1\d{2}(?:\.\d+)?(?!\d)')  # 1000 100.001
 RE_DEALER_ORG = re.compile(r'交易商(?:代码|号)?\s*[:：]?\s*\d{6}\s*[（(]?\s*([一-龥]{2,10}(?:证券资管|证券自营|证券机构经纪|证券|资管|基金|信托|银行|期货))')
+RE_DIRECTION_LABEL = re.compile(r'(?:交易)?方向\s*[:：]?\s*(买入|卖出)')
+RE_TRADE_CONTEXT = re.compile(r'净价|到期|行权|出给|卖给|买自|\bto\b|\bfrom\b|买入|卖出|卖方|买方', re.I)
+
+
+def _bond_parts(match):
+    """把代码前缀/后缀的多种写法统一成 (6位代码, SH/SZ)。"""
+    if not match:
+        return "", ""
+    digits = match.group(1) or match.group(4)
+    exchange = (match.group(2) or match.group(3) or "").upper()
+    return digits, exchange
+
+
+def _canonical_bond(match):
+    digits, exchange = _bond_parts(match)
+    return f"{digits}.{exchange}" if digits and exchange else ""
 
 # ========== 3. 主执行链路 ==========
 def parse_text(text):
@@ -167,7 +199,7 @@ def split_records(text):
         first_bond_code=""
         if first_bond_line >= 0:
             m=RE_BOND.search(lines[first_bond_line])
-            if m: first_bond_code=m.group(0)
+            if m: first_bond_code=_canonical_bond(m)
         if first_bond_line > 0:
             carry_prefix='\n'.join(lines[:first_bond_line])
             carry_bond_code=first_bond_code
@@ -203,7 +235,7 @@ def looks_like_trade_chunk(chunk):
         return True
     # 无债券代码时，"约定号/主体代码"这类续行信息经常单独成段，不能仅凭一个弱候选简称就把它误判成新交易。
     # 这里要求同时满足"核心交易语境" + "高置信债券简称"，把补充说明块留给上一笔记录拼接。
-    if not re.search(r'净价|到期|行权|出给|\bto\b|\bfrom\b|买入|卖出|卖方|买方', chunk):
+    if not RE_TRADE_CONTEXT.search(chunk):
         return False
     return has_confident_bond_name(chunk)
 
@@ -244,18 +276,20 @@ def build_parse_context(rec, self_subjects=frozenset()):
     base_rec = main_rec or rec
     bm = RE_BOND.search(base_rec) or RE_BOND.search(rec)
     raw_code = bm.group(0) if bm else ""
-    code = f"{bm.group(1)}.{bm.group(2).upper()}" if bm else ""
-    mkt = MKT[bm.group(2).upper()] if bm else infer_market(rec)
-    name = get_name(base_rec, raw_code) or get_name(rec, raw_code)
+    code = _canonical_bond(bm)
+    _, exchange = _bond_parts(bm)
+    mkt = MKT.get(exchange, "") if bm else infer_market(rec)
+    labeled_name = RE_BOND_NAME_LABEL.search(base_rec) or RE_BOND_NAME_LABEL.search(rec)
+    name = labeled_name.group(1) if labeled_name else (get_name(base_rec, raw_code) or get_name(rec, raw_code))
     if not (code or name):
         return None
 
     date = norm_date(rec)
     settle_speed = ""
-    sm = RE_SETTLE_TODAY.search(rec)
+    sm = RE_SETTLE_T.search(rec) or RE_SETTLE_TODAY.search(rec)
     if sm:
         settle_speed = f"T+{sm.group(1)}"
-        if not date:
+        if not date and RE_SETTLE_TODAY.search(rec):
             date = _today_iso()
     else:
         sm = RE_SETTLE_EXCH.search(rec) or RE_SETTLE_MD.search(rec) or RE_SETTLE_8D.search(rec) or RE_SETTLE_4D.search(rec)
@@ -276,10 +310,21 @@ def build_parse_context(rec, self_subjects=frozenset()):
             pm3 = RE_PRICE3.search(base_rec)
             if pm3:
                 price = pm3.group(1)
-    ym = RE_YIELD.search(base_rec)
-    yld = ym.group(1) + '%' if ym else ""
-    xk = re.search(r'行权[^\d]{0,3}(\d+\.\d+)|(\d+\.\d+)\s*行权', base_rec)
-    xingquan = (xk.group(1) or xk.group(2)) if xk else ""
+    xk = RE_EXERCISE_YIELD.search(base_rec)
+    if xk:
+        xingquan = xk.group(1) + ('%' if xk.group(2) else '')
+    else:
+        xk = re.search(r'行权[^\d]{0,3}(\d+\.\d+)|(\d+\.\d+)\s*行权', base_rec)
+        xingquan = (xk.group(1) or xk.group(2)) if xk else ""
+    ym = RE_MATURITY_YIELD.search(base_rec)
+    if ym:
+        yld = ym.group(1) + ('%' if ym.group(2) else '')
+    else:
+        yld = ""
+        for pct in RE_YIELD.finditer(base_rec):
+            if "行权" not in base_rec[max(0, pct.start() - 8):pct.start()]:
+                yld = pct.group(1) + '%'
+                break
     dqk = re.search(r'(\d+(?:\.\d+)?)\s*到期', base_rec)
     if dqk and not yld:
         yld = dqk.group(1)
@@ -289,7 +334,7 @@ def build_parse_context(rec, self_subjects=frozenset()):
     midfee = mid.group(1) if mid else ""
 
     mine, mpos = find_mine(base_rec)
-    direction, mineseg, otherseg = direction_and_split(base_rec, mpos if mpos >= 0 else 0)
+    direction, mineseg, otherseg = direction_and_split(base_rec, mpos)
     counter_seg = (otherseg.rstrip() + "\n" + supplement.lstrip()).strip() if supplement else otherseg
     if mine and mpos >= 0:
         win = base_rec[mpos:mpos + 90]
@@ -337,9 +382,11 @@ def build_parse_context(rec, self_subjects=frozenset()):
     if not guoquan and counter_acct and looks_like_plain_org(counter_acct):
         guoquan = counter_acct
 
-    orig = price
-    deal = price
-    if midfee and price:
+    orig_match = RE_ORIG_PRICE.search(base_rec)
+    deal_match = RE_DEAL_PRICE.search(base_rec)
+    orig = orig_match.group(1) if orig_match else price
+    deal = deal_match.group(1) if deal_match else price
+    if midfee and price and not deal_match:
         try:
             p = float(price)
             f = float(midfee)
@@ -388,9 +435,10 @@ def build_parse_context(rec, self_subjects=frozenset()):
     )
 
 def resolve_counterparty(otherseg, rec="", mine="", self_subjects=frozenset()):
-    o_dealer = RE_DEALER.search(otherseg).group(1) if RE_DEALER.search(otherseg) else ""
+    dealer_match = RE_DEALER.search(otherseg)
+    o_dealer = dealer_match.group(1) if dealer_match else find_known_dealer_code(otherseg)
     o_trader = (RE_TRADER.search(otherseg) or RE_TRADER2.search(otherseg))
-    o_trader = o_trader.group(1) if o_trader else ""
+    o_trader = o_trader.group(1).upper() if o_trader else ""
     # 主体代码：优先取"裸代码"(不要求紧跟标签)，第一个出现的、且不是已知我方经纪席位码的
     # 36 开头代码就是对方的——有些记录里"交易主体代码："标签本身是空的，真正的代码单独另起
     # 一行(无标签)，反而是本方经纪身份块里的代码带着完整标签，只认标签会取反
@@ -402,28 +450,28 @@ def resolve_counterparty(otherseg, rec="", mine="", self_subjects=frozenset()):
         m=RE_SUBJ.search(otherseg)
         if m and m.group(1) not in self_subjects:
             o_subj=m.group(1)
-    o_icode  = RE_ICODE.search(otherseg).group(0) if RE_ICODE.search(otherseg) else ""
+    o_icode  = RE_ICODE.search(otherseg).group(0).lower() if RE_ICODE.search(otherseg) else ""
     o_person = person_name(otherseg)
     o_subjname = extract_subject_name(otherseg)
     o_prod   = pick_prod(otherseg)
+    o_labeled = extract_role_account(otherseg, "counter") or extract_role_account(rec, "counter")
     o_head   = extract_counterparty_head(otherseg)
-    visible_org = normalize_visible_org(o_subjname) or normalize_visible_org(o_head)
-    dealer_org_visible = dealer_org(otherseg) or org_near(otherseg, o_dealer)
-    o_org    = dealer_org_visible or visible_org or pick_org(otherseg)
-    if mine_related_text(o_org):    # 过券不能是我方机构自己(如裸"中信信托"混进了对方段)
-        o_org=""
-    if not o_org and o_subjname and looks_like_plain_org(o_subjname):
-        o_org = o_subjname
-
-    acct = _choose_counterparty_account((o_prod, o_subjname, o_head), org=o_org)
-    org = o_org
-    if acct:
-        org_guess = normalize_visible_org(acct)
-        org_from_acct, acct_full = split_org_from_account(acct)
-        org_guess = org_guess or org_from_acct
-        if org_guess and not org:
-            org = org_guess
-        acct = acct_full
+    acct = resolve_counterparty_account(
+        labeled=o_labeled,
+        subject_name=o_subjname,
+        product=o_prod,
+        head=o_head,
+    )
+    org = resolve_guoquan(
+        otherseg,
+        dealer_code=o_dealer,
+        subject_name=o_subjname,
+        head=o_head,
+        account=acct,
+    )
+    if not acct and org:
+        # 对方只报机构、未报产品账户时，机构本身可作为对方账户；动作词和标签噪声不会进入这里。
+        acct = org
     return dict(
         dealer_code=o_dealer,
         trader_code=o_trader,
@@ -433,7 +481,7 @@ def resolve_counterparty(otherseg, rec="", mine="", self_subjects=frozenset()):
         subject_name=o_subjname,
         account=acct,
         guoquan=org,
-        short=dealer_org_visible or normalize_visible_org(o_head) or normalize_visible_org(o_subjname) or org or dealer_name_from_code(o_dealer),
+        short=org or dealer_name_from_code(o_dealer),
     )
 
 def expand_splits(rec):
@@ -627,7 +675,10 @@ def _resolve_multi_rows(ctx, allow_subject_anchor=False):
 def _append_multi_rows(ctx, multi, multi_from_anchor=False):
     rows = []
     odc, otc = other_codes(ctx["rec"], ctx["mine"], ctx["mpos"])
-    short = (org_near(ctx["rec"], odc) or dealer_name_from_code(odc)) if ctx["mkt"] == "深交所" else ""
+    odc = ctx["counter_dealer_code"] or odc
+    otc = ctx["counter_trader_code"] or otc
+    short = (ctx["counter_short"] or dealer_name_from_code(odc)) if ctx["mkt"] == "深交所" else ""
+    shared_guoquan = ctx["guoquan"] or (dealer_name_from_code(odc) if ctx["mkt"] == "深交所" else "")
     o_person = ctx["o_person"] or person_name(ctx["rec"])
     sh_tcode = ""
     if ctx["mkt"] == "上交所":
@@ -639,13 +690,7 @@ def _append_multi_rows(ctx, multi, multi_from_anchor=False):
                 break
     for acct, subj, sz, yd, tcode in multi:
         r = _make_row(ctx, sz, yd, acct=acct, subj=subj)
-        row_org = normalize_visible_org(acct)
-        acct_org, _ = split_org_from_account(acct)
-        row_org = row_org or acct_org
-        if not row_org and acct:
-            m = RE_ORG.match(_compact_text(acct))
-            if m:
-                row_org = m.group(1)
+        row_org = org_from_account(acct)
         r["对手方交易员"] = o_person
         r["对手方交易员代码"] = tcode or sh_tcode or otc
         if ctx["mkt"] == "深交所":
@@ -653,7 +698,11 @@ def _append_multi_rows(ctx, multi, multi_from_anchor=False):
                 r["对手方交易商代码"] = odc
             if short:
                 r["对手方交易商简称"] = short
-        r["过券"] = row_org or pick_org(ctx["counter_seg"])
+        # 交易商/通道是共享的强证据；只有公共块未给出机构时，才从该拆单账户的明确前缀推导。
+        if ctx["mkt"] == "深交所" and odc:
+            r["过券"] = shared_guoquan or row_org
+        else:
+            r["过券"] = row_org or shared_guoquan
         if not yd:
             r["备注"] = "约定号原文未给出，需人工核对补充"
         elif not sz:
@@ -740,8 +789,9 @@ def parse_template_t5(ctx):
 def parse_template_t6(ctx):
     rows = []
     odc, otc = other_codes(ctx["rec"], ctx["mine"], ctx["mpos"])
-    short = org_near(ctx["rec"], odc) or dealer_name_from_code(odc)
-    explicit_org = normalize_visible_org(ctx["counter_seg"]) or org_near(ctx["rec"], odc)
+    odc = ctx["counter_dealer_code"] or odc
+    otc = ctx["counter_trader_code"] or otc
+    explicit_org = ctx["guoquan"] or dealer_name_from_code(odc)
     person = person_name(ctx["rec"])
     for t in ctx["table"]:
         r = _make_row(ctx, t['size'], t['yd'], acct=t['acct'], subj=t['subj'])
@@ -755,7 +805,7 @@ def parse_template_t6(ctx):
             r['对手方交易员代码'] = otc
         if person:
             r['对手方交易员'] = person
-        r['过券'] = explicit_org or (t['acct'] if looks_like_plain_org(t['acct']) else "")
+        r['过券'] = explicit_org or org_from_account(t['acct'])
         rows.append(r)
     return rows
 
@@ -807,12 +857,12 @@ def _size_line_is_noise(line, code="", name="", row_mode=False):
         return False
     if name and name in line:
         return False
-    if re.search(r'净价|票面|到期|行权|出给|\bto\b|\bfrom\b|买入|卖出|约定号', line):
+    if re.search(r'净价|票面|到期|行权|出给|卖给|买自|\bto\b|\bfrom\b|买入|卖出|约定号', line, re.I):
         return False
     return bool(re.search(r'交易商(?:代码|号)?|交易员(?:代码|号)?|主体(?:代码|名称|简称|全称)|席位号', line))
 
 
-SIZE_CTX = re.compile(r'净价|票面|到期|行权|出给|\bto\b|\bfrom\b|买入|卖出|约定号|交易所')
+SIZE_CTX = re.compile(r'净价|票面|到期|行权|出给|卖给|买自|\bto\b|\bfrom\b|买入|卖出|约定号|交易所', re.I)
 RE_SIZE_INT = re.compile(r'(?<![A-Za-z0-9.])(\d{2,6})(?![A-Za-z0-9.])')
 
 
@@ -839,6 +889,8 @@ def _normalize_size_scan_text(text, code="", name=""):
     for token in (code, name):
         if token:
             text = re.sub(re.escape(token), ' ', text, flags=re.I)
+    # 带单位规模已在第一轮按高置信候选收集；从无单位扫描文本中移除，避免把 1,500万 再拆成 500。
+    text = RE_SIZE_TOKEN.sub(' ', text)
     text = RE_YD.sub(' ', text)
     text = re.sub(r'交易商(?:代码|号)?\s*[:：]?\s*\d{6}', ' ', text)
     text = re.sub(r'交易员(?:代码|号)?\s*[:：]?\s*[0-9A-Z]{7,8}', ' ', text)
@@ -920,27 +972,6 @@ RE_BOND_NAME_PIECE = re.compile(r'[A-Za-z0-9一-龥]+')
 BOND_CTX = re.compile(r'净价|票面|约定号|出给|\bto\b|\bfrom\b|买入|卖出|到期|行权|交易所')
 
 
-def looks_like_account_name(text):
-    nm=_compact_text(text)
-    if not nm:
-        return False
-    if any(word in nm for word in ("计划","组合","基金","年金","私募")):
-        return True
-    if re.search(r'\d+(?:个)?月', nm):
-        return True
-    if any(nm.startswith(prefix) for prefix in MINE_PREFIXES):
-        return True
-    return bool(re.fullmatch(r'[一-龥]{2,12}\d+M?\d*号', nm))
-
-
-def looks_like_plain_org(text):
-    nm=_compact_text(text)
-    if not nm:
-        return False
-    m=RE_ORG.search(nm)
-    return bool(m and m.group(1)==nm)
-
-
 def _normalize_bond_name_candidate(text):
     nm = re.sub(r'\s+', '', _norm_basic(text or ""))
     return nm.strip('：:，,；;（）()[]【】"\'“”‘’')
@@ -986,7 +1017,8 @@ def _bond_name_noise_stripped(text, code=""):
     text = _norm_basic(text or "")
     if code:
         text = re.sub(re.escape(code), ' ', text, flags=re.I)
-    text = re.sub(r'i\d{9}|[A-Za-z一-龥]*[Zz]\d{5,}', ' ', text)
+    # Z/i 码本身是噪声，但码前中文通常是机构或账户名，不能连同“首创证券”一起吞掉。
+    text = re.sub(r'i\d{9}|[A-Za-z]*[Zz]\d{5,}', ' ', text)
     text = re.sub(r'20\d{2}[./-]\d{1,2}[./-]\d{1,2}|20\d{6}', ' ', text)
     text = re.sub(r'(?<!\d)\d{1,2}[./-]\d{1,2}(?!\d)|(?<!\d)\d{4}(?=\s*[+＋]\d{1,2})', ' ', text)
     text = re.sub(r'[+＋]\d{1,2}(?!\d)', ' ', text)
@@ -1150,7 +1182,7 @@ def extract_multi(seg, mkt):
             out=[]
             for m in RE_MULTI_SZ.finditer(seg):
                 sz=int(m.group(3)) if m.group(3) else ''
-                nm=RE_SUBJ_LABEL.sub('', m.group(2)).strip(' \t：:，,；;（(').strip()
+                nm=extract_full_account_from_line(RE_SUBJ_LABEL.sub('', m.group(2)))
                 nm,sz=split_trailing_size(nm,sz)      # 名尾若跟"规模区间整数"则切出来当规模
                 out.append((nm,m.group(1),sz,m.group(4),''))
         if len(out)<2:   # 方正式：短名+规模万+约定号 分列，主体代码/全称另行分列(标签不一)
@@ -1209,12 +1241,16 @@ def split_trailing_size(name, cur_size):
     return name, cur_size
 
 def _gen_prodname(line):
-    """从一行里取对方产品/账户名：去我方、去标签词，优先带'号/计划/组合/年金'的名"""
+    """多笔行优先按字段边界读取完整账户，旧词形规则只作兜底。"""
     l=line
     for w in WHITELIST: l=l.replace(w,' ')
     l=RE_MINE_PAT.sub(' ', l)
     l=re.sub(r'(交易主体名称|交易主体简称|主体名称|交易商名称)[：:]\s*','',l)
-    for m in re.finditer(r'[一-龥][一-龥A-Za-z0-9－\-（）]*?(?:\d+M?\d*号(?:\d{1,3}个月)?|\d+号(?:\d{1,3}个月)?|集合资产管理计划|职业年金计划|企业年金计划|年金|组合)', l):
+    full = extract_full_account_from_line(l)
+    if full and looks_like_account_name(full) and not mine_related_text(full):
+        return full
+    compound_tail = r'(?:\d{1,3}个月)?(?:集合资产管理计划|资产管理计划|职业年金计划|企业年金计划|年金计划)?'
+    for m in re.finditer(r'[一-龥][一-龥A-Za-z0-9－\-（）]*?(?:\d+M?\d*号' + compound_tail + r'|\d+号' + compound_tail + r'|集合资产管理计划|职业年金计划|企业年金计划|年金|组合)', l):
         nm=RE_SUBJ_LABEL.sub('', m.group(0)).strip('－- ')
         if nm and not RE_NOTNAME.match(nm): return nm
     return ''
@@ -1409,18 +1445,18 @@ def extract_paren_products(rec):
 
 def extract_multibond(rec):
     """同一对手、多只券（每只券各带规模/净价/收益率/约定号）→ 逐券一行"""
-    codes=[(m.start(),m.group(0)) for m in RE_BOND.finditer(rec)]
+    codes=[(m.start(),m.group(0),_canonical_bond(m)) for m in RE_BOND.finditer(rec)]
     if len(codes)<2: return []
     out=[]
-    for idx,(pos,code) in enumerate(codes):
+    for idx,(pos,raw_code,code) in enumerate(codes):
         end=codes[idx+1][0] if idx+1<len(codes) else len(rec)
         chunk=rec[pos:end]
         ydm=RE_YD.search(chunk)
         if not ydm: return []          # 不是"每券各自约定号"结构
         ym=RE_YIELD.search(chunk)
-        pm=RE_PRICE.search(chunk) or RE_PRICE2.search(chunk.replace(code,''))
-        name=get_name(chunk,code)
-        out.append(dict(code=code,name=name,size=get_size(chunk, code=code, name=name),
+        pm=RE_PRICE.search(chunk) or RE_PRICE2.search(chunk.replace(raw_code,''))
+        name=get_name(chunk,raw_code)
+        out.append(dict(code=code,name=name,size=get_size(chunk, code=raw_code, name=name),
             yld=(ym.group(1)+'%') if ym else '',price=pm.group(1) if pm else '',yd=ydm.group(1)))
     return out if len(out)>=2 else []
 
@@ -1433,6 +1469,7 @@ def _today_iso():
 # 年份用当年，不再写死；每个候选都做月1-12、日1-31的合法性校验，避免把约定号误当成紧凑日期。
 _DATE_CANDIDATES = (
     (RE_DATEF, True),   # (年,月,日)
+    (RE_DATEZH, True),  # 中文年月日，如 "2026年7月8日"
     (RE_DATEC, True),   # 紧凑 YYYYMMDD，如表格式 "20260703"
     (RE_DATES, False),  # "7.2交易所"/"7-2交易所"/"7/2交易所"
     (RE_DATEM, False),  # "7月2日"
@@ -1452,8 +1489,10 @@ def norm_date(rec):
             y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
         else:
             y, mo, d = year, int(m.group(1)), int(m.group(2))
-        if 1 <= mo <= 12 and 1 <= d <= 31:
-            return f"{y:04d}-{mo:02d}-{d:02d}"
+        try:
+            return date(y, mo, d).isoformat()
+        except ValueError:
+            continue
     if re.search(r'(?:今日|今天)(?:\s*交易所)?', rec):
         return _today_iso()
     return ""
@@ -1478,6 +1517,9 @@ def mine_related_text(text):
 
 def find_mine(rec):
     """返回 (我方账户, 命中位置) ；没命中返回(None,-1)"""
+    labeled, labeled_pos = extract_role_account(rec, "mine", with_pos=True)
+    if labeled:
+        return labeled, labeled_pos
     best=None; pos=-1
     for alias in MINE_ALIASES:
         m=_find_spaced_text(rec, alias, optional_hao=alias.endswith('号'))
@@ -1491,16 +1533,15 @@ def find_mine(rec):
 
 def direction_and_split(rec, mine_pos):
     """判断方向，返回(方向, 我方段, 对方段)"""
-    explicit_direction = ""
-    for sep in ["出给"," to ","to "]:
-        j=rec.find(sep)
-        if j>=0:
-            explicit_direction = "卖出" if mine_pos < j else "买入"
-            break
-    if not explicit_direction:
-        j=rec.find("from")
-        if j>=0:
-            explicit_direction = "卖出"
+    labeled_direction = RE_DIRECTION_LABEL.search(rec)
+    explicit_direction = labeled_direction.group(1) if labeled_direction else ""
+    to_match = re.search(r'出给|卖给|\bto\b', rec, re.I)
+    from_match = re.search(r'买自|\bfrom\b', rec, re.I)
+
+    if not explicit_direction and to_match:
+        explicit_direction = "卖出" if mine_pos < 0 or mine_pos < to_match.start() else "买入"
+    if not explicit_direction and from_match:
+        explicit_direction = "买入" if 0 <= mine_pos < from_match.start() else "卖出"
     if not explicit_direction:
         j=rec.find("买入")
         if j>=0 and rec[j:j+3]!="买入方":
@@ -1511,6 +1552,13 @@ def direction_and_split(rec, mine_pos):
     if ms and mb:
         lo,hi=sorted([ms.start(), mb.start()])
         seg1,seg2=rec[lo:hi],rec[hi:]
+        # 明确买卖方块出现时，我方账户实际落在哪个块是最强证据，优先级高于抬头中的 to/from。
+        if lo <= mine_pos < hi:
+            direction = "卖出" if "卖" in seg1[:4] else "买入"
+            return direction, seg1, seg2
+        if mine_pos >= hi:
+            direction = "卖出" if "卖" in seg2[:4] else "买入"
+            return direction, seg2, seg1
         if explicit_direction == "卖出":
             mineseg,otherseg = (seg1,seg2) if "卖" in seg1[:4] else (seg2,seg1)
             return "卖出", mineseg, otherseg
@@ -1521,16 +1569,22 @@ def direction_and_split(rec, mine_pos):
         else: mineseg,otherseg=seg2,seg1
         direction="卖出" if "卖" in mineseg[:4] else "买入"
         return direction, mineseg, otherseg
-    # 分隔符 出给/to
-    for sep in ["出给"," to ","to "]:
-        j=rec.find(sep)
-        if j>=0:
-            left,right=rec[:j],rec[j+len(sep):]
-            return ("卖出",left,right) if mine_pos<j else ("买入",right,left)
-    # from：X 买入 ... from 我方 → 我方=卖方
-    j=rec.find("from")
-    if j>=0:
-        return "卖出", rec[j+4:], rec[:j]
+    # 分隔符 出给/to/卖给：左侧是卖方，右侧是买方。
+    if to_match:
+        left, right = rec[:to_match.start()], rec[to_match.end():]
+        mine_left = mine_pos < 0 or mine_pos < to_match.start()
+        if labeled_direction:
+            mine_left = explicit_direction == "卖出"
+        return (explicit_direction or ("卖出" if mine_left else "买入"), left, right) if mine_left else (explicit_direction or "买入", right, left)
+    # from/买自：左侧是买方，右侧是卖方；根据我方账户位置决定方向，不再固定判为卖出。
+    if from_match:
+        left, right = rec[:from_match.start()], rec[from_match.end():]
+        mine_left = 0 <= mine_pos < from_match.start()
+        if mine_pos < 0 and labeled_direction:
+            mine_left = explicit_direction == "买入"
+        return (explicit_direction or ("买入" if mine_left else "卖出"), left, right) if mine_left else (explicit_direction or "卖出", right, left)
+    if labeled_direction:
+        return explicit_direction, rec, rec
     # 对方买入 …… 我方(在后)：如"金融街证券 i… 买入 bond … 中信信昱11号" → 我方卖出，对方在买入前
     j=rec.find("买入")
     if j>=0 and rec[j:j+3]!="买入方":
@@ -1549,30 +1603,6 @@ def direction_and_split(rec, mine_pos):
         otherseg = rec[:m_self.start()] + rec[m_self.end():]
         return "", mineseg, otherseg
     return "", rec, ""
-
-# 常见交易商代码→机构简称（原文未拼出机构名时兜底，按需维护）
-DEALER_NAME={
-    "000262":"中信证券","000038":"中信证券华南","000032":"广发证券","000680":"中信建投证券",
-    "000039":"世纪证券","000613":"首创证券","006206":"国泰基金","000028":"方正证券",
-    "000287":"东吴证券","000664":"财通证券","006285":"国联基金","006205":"富国基金",
-    "006281":"太平基金","000128":"兴业证券","000001":"国信证券","000612":"国泰海通",
-    "000058":"华鑫证券","000695":"申港证券","000316":"第一创业","007101":"华泰资产",
-    "007130":"英大资产","000402":"东方财富","000025":"光大证券","006223":"宝惠",
-    "000657":"中邮证券",
-}
-def org_near(rec, code6):
-    """按6位交易商代码就近取原文里实际写出的机构名（前后各14字）。"""
-    if not code6: return ""
-    i=rec.find(code6)
-    if i>=0:
-        for region in (rec[i+6:i+6+14], rec[max(0,i-14):i]):
-            m=RE_ORG.search(region)
-            if m: return m.group(1)
-    return ""
-
-
-def dealer_name_from_code(code6):
-    return DEALER_NAME.get(code6, "")
 
 def other_codes(rec, mine, mine_pos):
     """取"非我方"的交易商/交易员代码：我方代码紧跟白名单之后，其余即对手方"""
@@ -1600,37 +1630,35 @@ def person_name(seg):
         r'交易员代码\s*[:：]?\s*[0-9A-Z]{7,8}([一-龥]{2,4})(?![一-龥])',                        # 码紧贴名：006V0014蒋佳玮
     ]
     for p in pats:
-        for m in re.finditer(p, seg):
+        for m in re.finditer(p, seg, re.I):
             nm=m.group(1)
             if not RE_NOTNAME.search(nm): return nm
     m=re.search(r'[（(]([一-龥]{2,4})[)）]', seg)
     if m and not RE_NOTNAME.search(m.group(1)): return m.group(1)
     return ""
 
-def extract_labeled_account(seg):
-    m = re.search(
-        r'账户\s*[：:]?\s*[“"\'‘]?\s*(.+?)\s*(?=(?:本方交易商简称|交易主体(?:代码|名称|简称|全称)|交易商(?:代码|号)?|交易员(?:代码|号)?|约(?:定号)?|\)|）|\n|$))',
-        seg or "",
-    )
-    if not m:
-        return ""
-    acct = _norm_basic(m.group(1)).strip(' \t：:，,；;“”"\'‘’（）()')
-    acct = acct.replace('“', '').replace('”', '').replace('"', '').replace("'", '').replace('‘', '').replace('’', '')
-    return acct
-
-def pick_org(seg):
-    m=RE_ORG.search(seg)
-    return m.group(1) if m else ""
 def pick_prod(seg):
-    acct = extract_labeled_account(seg)
-    if acct and not mine_related_text(acct):
-        return acct
-    # 取第一个"不是我方自己"的候选——对方段里偶尔会先出现我方白名单产品名的残留文本
-    # (比如我方经纪身份块被挖空后，前面仍留着我方产品名)，不能一遇到就直接采用
-    for m in RE_PROD.finditer(seg):
-        if not mine_related_text(m.group(1)):
-            return m.group(1)
-    return ""
+    return counterparty.pick_prod(seg, mine_related_text)
+
+
+def resolve_counterparty_account(labeled="", subject_name="", product="", head=""):
+    return counterparty.resolve_counterparty_account(
+        labeled, subject_name, product, head, mine_related=mine_related_text
+    )
+
+
+def org_from_account(account):
+    return counterparty.org_from_account(account, mine_related_text)
+
+
+def resolve_guoquan(seg, dealer_code="", subject_name="", head="", account=""):
+    return counterparty.resolve_guoquan(
+        seg, dealer_code, subject_name, head, account, mine_related=mine_related_text
+    )
+
+
+def extract_counterparty_head(seg):
+    return counterparty.extract_counterparty_head(seg, mine_related_text)
 
 
 def infer_market(rec, code=""):
@@ -1643,129 +1671,6 @@ def infer_market(rec, code=""):
     if "上交所" in rec:
         return "上交所"
     return ""
-
-
-def extract_subject_name(seg):
-    def _clean_subject_text(text):
-        text = _norm_basic(text or "").strip(' \t：:，,；;')
-        text = re.sub(r'^36\d{8}\s*', '', text)
-        text = re.sub(r'约(?:定号)?[：:\s]*\d[\d+＋、，,\s]*.*$', '', text)
-        text = re.sub(r'[（(]\s*\d+(?:\.\d+)?\s*(?:[wW万]|[kK](?:\s*[wW])?|[eE亿])\s*[)）]', '', text)
-        text = text.strip(' \t：:，,；;')
-        if re.search(r'交易商(?:代码|号)?|交易员(?:代码|号)?|交易主体代码|代码[:：]\d', text):
-            return ""
-        return text
-
-    pats = [
-        r'(?:交易主体全称|主体全称|交易主体名称|主体名称)\s*[：:]?\s*([一-龥A-Za-z0-9－\-（）()·]{3,80})',
-        r'(?:交易主体简称|主体简称)\s*[：:]?\s*([一-龥A-Za-z0-9－\-（）()·]{3,80})',
-        r'(?:交易(?:商)?主体)(?!代码|名称|简称|全称)\s*[：:]?\s*(?:36\d{8}\s*)?([^\n约]{3,80})',
-    ]
-    for pat in pats:
-        m=re.search(pat, seg)
-        if m:
-            cleaned = _clean_subject_text(m.group(1))
-            if cleaned:
-                return cleaned
-    m=re.search(r'交易主体代码[（(]([一-龥A-Za-z0-9]{2,20})[)）]', seg)
-    if m:
-        return _clean_subject_text(m.group(1))
-    return ""
-
-
-def split_org_from_account(acct):
-    acct = (acct or "").strip()
-    if not acct:
-        return "", ""
-    m=re.match(r'^([一-龥]{2,12}(?:证券资管|证券自营|证券机构经纪|证券|资管|基金|信托|银行|期货|保险|养老|人寿|财富|资产))(.+)$', acct)
-    if not m:
-        return "", acct
-    org, tail = m.group(1), m.group(2).strip()
-    if not tail or looks_like_plain_org(acct):
-        return org, acct
-    if looks_like_account_name(tail) or any(word in tail for word in ACCOUNT_HINT_WORDS):
-        return org, acct
-    return "", acct
-
-
-def normalize_visible_org(text):
-    text = _norm_basic(text or "").strip(' \t：:，,；;')
-    if not text:
-        return ""
-    text = re.split(r'[，,；;（(]', text, maxsplit=1)[0].strip()
-    text = re.sub(r'(?:机构经纪|证券机构经纪|自营)$', '', text).strip(' \t：:，,；;')
-    pats = [
-        r'([一-龥]{2,20}证券华南)',
-        r'([一-龥]{2,20}(?:证券资管|证券|资管|基金|信托|银行|期货|保险|养老|人寿|财富|资产))',
-    ]
-    for pat in pats:
-        m = re.match(pat, text)
-        if m:
-            return m.group(1)
-    return text if looks_like_plain_org(text) else ""
-
-
-def _clean_counterparty_candidate(text):
-    text = _norm_basic(text or "").strip()
-    if not text:
-        return ""
-    text = re.sub(r'[（(].*?[)）]', ' ', text)
-    text = re.split(r'交易商(?:代码|号)?|交易员(?:代码|号)?|交易主体(?:代码|名称|简称|全称)|本方交易商简称|账户\s*[：:]', text, maxsplit=1)[0]
-    text = re.sub(r'^(?:深交|上交|交易所)\s*[:：]\s*', '', text)
-    text = re.sub(r'^(?:出给|to|from|买入方?|卖出方?|买方|卖方)\s*[:：]?\s*', '', text, flags=re.I)
-    text = re.sub(r'^[一-龥]{1,4}\s*[:：]\s*', '', text)
-    text = re.sub(r'i\d{9}|[A-Za-z一-龥]*[Zz]\d{5,}', ' ', text)
-    text = RE_YD.sub(' ', text)
-    text = re.sub(r'(?<![A-Za-z0-9.])\d{2,6}(?:\s*[+＋]\s*\d{2,6})+(?![A-Za-z0-9])', ' ', text)
-    text = re.sub(r'(?<![A-Za-z0-9.])\d+(?:\.\d+)?\s*(?:亿|[eE]|[kK](?:\s*[wW])?|[wW万])(?![A-Za-z0-9])', ' ', text)
-    text = re.sub(r'20\d{2}[./-]\d{1,2}[./-]\d{1,2}', ' ', text)
-    text = re.sub(r'(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)', ' ', text)
-    text = re.sub(r'(?<!\d)\d{1,2}[./-]\d{1,2}(?!\d)', ' ', text)
-    text = re.sub(r'(?:买券|卖券|交易|净价|行权|到期)', ' ', text)
-    text = re.sub(r'(?<![A-Za-z0-9一-龥.])\d{2,6}(?![A-Za-z0-9一-龥.])', ' ', text)
-    text = _compact_text(text).strip('：:，,；;')
-    return re.sub(r'^[,，;；:：]+|[,，;；:：]+$', '', text)
-
-
-def _choose_counterparty_account(candidates, org=""):
-    cleaned_org = _clean_counterparty_candidate(org)
-    for cand in candidates:
-        cand = _clean_counterparty_candidate(cand)
-        if not cand or mine_related_text(cand):
-            continue
-        if looks_like_plain_org(cand) and not looks_like_account_name(cand):
-            continue
-        return cand
-    if cleaned_org and not mine_related_text(cleaned_org):
-        return cleaned_org
-    return ""
-
-
-def extract_counterparty_head(seg):
-    for raw in (seg or "").splitlines():
-        line = _strip_leading_enum(raw).strip()
-        if not line:
-            continue
-        line = re.sub(r'[（(].*?[)）]', ' ', line)
-        line = re.split(r'交易商(?:代码|号)?|交易员(?:代码|号)?|交易主体(?:代码|名称|简称|全称)', line, maxsplit=1)[0]
-        if (
-            RE_DEALER.search(line)
-            or RE_TRADER.search(line)
-            or RE_TRADER2.search(line)
-            or "交易员" in line
-            or "交易商" in line
-            or "交易主体" in line
-        ):
-            continue
-        line = _clean_counterparty_candidate(line)
-        if not line or mine_related_text(line):
-            continue
-        if RE_BOND.search(line) or re.search(r'净价|行权|到期', line):
-            continue
-        return line
-    return ""
-
-
 
 
 def write_rows_to_xlsx(rows, out_path):

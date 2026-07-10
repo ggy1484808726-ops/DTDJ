@@ -556,8 +556,174 @@ class BondNameExtractionTests(unittest.TestCase):
         )
         self.assertEqual([r["对手方交易主体代码"] for r in rows], ["3600025506", "3600054511", "3600049514"])
         self.assertEqual([r["约定号"] for r in rows], ["13441344", "13551355", "13661366"])
-        self.assertTrue(all(r["过券"] == "" for r in rows))
+        self.assertTrue(all(r["过券"] == "光大证券" for r in rows))
         self.assertTrue(all(r["对手方交易商简称"] == "光大证券" for r in rows))
+
+    def test_semantic_labels_support_unseen_accounts_and_explicit_values(self):
+        text = """交易日期：2025年12月8日；清算速度：T+1；交易方向：买入
+债券代码：SH 245555；债券简称：26中电K2；到期收益率：2.456；原始净价：99.880；交易净价：99.890；交易规模：1,500万
+我方账户：华盈稳健新策略1号；对方账户：银河证券自营；约定号：998877"""
+        row = extractor.parse_text(text)[0]
+        expected = {
+            "市场": "上交所",
+            "交易方向": "买入",
+            "交易日期": "2025-12-08",
+            "债券代码": "245555.SH",
+            "债券简称": "26中电K2",
+            "到期收益率": "2.456",
+            "原始净价": "99.880",
+            "交易净价": "99.890",
+            "交易规模万": 1500,
+            "我方账户": "华盈稳健新策略1号",
+            "对方账户": "银河证券自营",
+            "清算速度": "T+1",
+            "约定号": "998877",
+        }
+        for field, value in expected.items():
+            with self.subTest(field=field):
+                self.assertEqual(row[field], value)
+
+    def test_bond_code_separator_and_prefix_variants_are_canonicalized(self):
+        samples = {
+            "245555-SH 26中电K2 1000万 净价100 中信信托信昱13号 出给 银河证券 约定号101": "245555.SH",
+            "520286 SZ 26临平Y1 1000万 净价100 中信信托信昱13号 出给 中信建投证券 约定号102": "520286.SZ",
+            "SH:245555 26中电K2 1000万 净价100 中信信托信昱13号 出给 银河证券 约定号103": "245555.SH",
+        }
+        for text, expected in samples.items():
+            with self.subTest(text=text):
+                row = extractor.parse_text(text)[0]
+                self.assertEqual(row["债券代码"], expected)
+
+    def test_from_direction_depends_on_our_account_position(self):
+        buy = "中信信托信昱13号 245555.SH 26中电K2 1000万 净价100 FROM 银河证券自营 约定号101"
+        sell = "银河证券自营 买入 245555.SH 26中电K2 1000万 净价100 FROM 中信信托信昱13号 约定号102"
+        self.assertEqual(extractor.parse_text(buy)[0]["交易方向"], "买入")
+        self.assertEqual(extractor.parse_text(sell)[0]["交易方向"], "卖出")
+
+    def test_lowercase_trader_code_and_explicit_t_settlement_are_normalized(self):
+        text = """2025年12月8日 520286-SZ 26临平Y1 1000万 净价100 中信信托信昱13号 出给 中信建投证券
+交易商代码：000680
+交易员代码：00iw0022 刘思彤
+交易主体代码：3600003320
+约定号：16191619
+结算方式：T+0"""
+        row = extractor.parse_text(text)[0]
+        self.assertEqual(row["交易日期"], "2025-12-08")
+        self.assertEqual(row["清算速度"], "T+0")
+        self.assertEqual(row["对手方交易员代码"], "00IW0022")
+        self.assertEqual(row["对手方交易员"], "刘思彤")
+
+    def test_size_after_exercise_keyword_is_not_misread_as_exercise_yield(self):
+        text = "2.05Y+NY 259348.SH 25北建Y2 AA+ 2.08行权 4000 今天交易所 中信信托信昱13号 出给 山西证券 约定号105"
+        row = extractor.parse_text(text)[0]
+        self.assertEqual(row["行权收益率"], "2.08")
+        self.assertEqual(row["交易规模万"], 4000)
+
+    def test_action_words_are_not_used_as_counterparty_accounts(self):
+        text = """520285.SZ 26滁工K1 2000 净价100 中信信托华盈添利4号 交易商号:000680 交易员号:00IW0015 交易主体代码:3600003118 交易主体名称:中信建投证券股份有限公司机构经纪
+出给
+交易商:000680(中信建投证券)
+交易主体:3600003118
+交易员:00IW0013
+约定号11061106 2026-07-02 交易卖方发单"""
+        row = extractor.parse_text(text)[0]
+        self.assertEqual(row["对方账户"], "中信建投证券")
+        self.assertEqual(row["过券"], "中信建投证券")
+
+    def test_party_blocks_override_inline_to_when_locating_counterparty(self):
+        text = """①买入 4.96Y 520260.SZ 26文体02 100净价 2000W 07.02交易所 广发证券 to 世纪证券资管
+买入方
+交易商代码:000039 世纪证券
+交易员号:00130016 李南阳
+交易主体代码/简称/量/约定号:
+3600062601 鑫享世成24M013号 500w 约定号12211221
+3600063165 鑫享世成24M014号 500w 约定号13311331
+卖出方
+中信信托信昱11号
+交易商号:000262
+交易员号:007A0001
+交易主体代码:3600000001
+交易主体名称:中信证券股份有限公司机构经纪
+卖家先发"""
+        rows = extractor.parse_text(text)
+        self.assertEqual([r["对方账户"] for r in rows], ["鑫享世成24M013号", "鑫享世成24M014号"])
+        self.assertTrue(all(r["交易方向"] == "卖出" for r in rows))
+        self.assertTrue(all(r["过券"] == "世纪证券" for r in rows))
+        self.assertTrue(all(r["对手方交易商代码"] == "000039" for r in rows))
+
+    def test_subject_account_boundary_excludes_yd_label(self):
+        text = """134936.SZ 26肥产K1 2000 净价100 中信信托信昱13号证券投资信托计划
+交易商:000262 交易员:007A0001 交易主体代码:3600000001 交易主体名称:中信证券股份有限公司机构经纪
+出给
+买入:国泰海通账户:
+交易商代码:000612
+交易员:赵越 00H00010
+交易主体代码:3600060282
+交易主体简称:国泰海通福星多元稳健1号集合资产管理计划(400万)约定号10061006
+买入:国泰海通账户:
+交易商代码:000612
+交易员:赵越 00H00010
+交易主体代码:3600060220
+交易主体简称:国泰海通福星多元稳健2号集合资产管理计划(600万)约定号10061007"""
+        rows = extractor.parse_text(text)
+        self.assertEqual(
+            [r["对方账户"] for r in rows],
+            ["国泰海通福星多元稳健1号集合资产管理计划", "国泰海通福星多元稳健2号集合资产管理计划"],
+        )
+        self.assertTrue(all(r["过券"] == "国泰海通" for r in rows))
+
+    def test_dealer_mapping_beats_product_fragment_for_guoquan(self):
+        text = """520271.SZ 26韶旅01 2000 净价100 中信信托信昱13号 交易商号:000262 交易员号:007A0001 交易主体代码:3600000001 交易主体名称:中信证券股份有限公司机构经纪
+出给
+交易商代码:007128
+交易主体代码:3600064069
+交易主体名称:东方红添利38号集合资产管理计划
+交易主体简称:东方红添利38号集合
+交易员代码:05I00005
+约定号18510851"""
+        row = extractor.parse_text(text)[0]
+        self.assertEqual(row["对方账户"], "东方红添利38号集合资产管理计划")
+        self.assertEqual(row["过券"], "东方证券资管")
+
+    def test_institution_head_is_account_while_dealer_is_guoquan(self):
+        text = """520292.SZ 26交资K2 1000 净价100 中信信托信昱13号 交易商号:000262 交易员号:007A0001 交易主体代码:3600000001 交易主体名称:中信证券股份有限公司机构经纪
+出给
+贵阳银行:
+交易商代码:000032 广发证券
+交易主体:3600001825 广发证券机构经纪
+交易员:000W0007
+约定号19330933"""
+        row = extractor.parse_text(text)[0]
+        self.assertEqual(row["对方账户"], "贵阳银行")
+        self.assertEqual(row["过券"], "广发证券")
+
+    def test_unlabeled_known_dealer_code_can_supply_guoquan(self):
+        text = """520312.SZ 26兴康02 2000 净价100 中信信托华盈添利4号 出给
+合享3号 资管 000058 3600063778 华鑫证券合享3号集合资产管理计划
+交易员代码:001M0033 约定号191"""
+        row = extractor.parse_text(text)[0]
+        self.assertEqual(row["对方账户"], "合享3号")
+        self.assertEqual(row["过券"], "华鑫证券")
+
+    def test_full_account_boundary_keeps_semantic_parentheses_and_internal_hyphen(self):
+        cases = {
+            "3600036691 山东省（拾号）职业年金计划－民生银行 1000万 约定号13520002":
+                "山东省(拾号)职业年金计划",
+            "3600063240 山西潞安矿业（集团）有限责任公司企业年金-中国工商银行 1000万 约定号13520003":
+                "山西潞安矿业(集团)有限责任公司企业年金",
+            "3600060000 方正证券建盈-玺福17号（家族专享）集合资产管理计划（400万） 约定号13520004":
+                "方正证券建盈-玺福17号(家族专享)集合资产管理计划",
+        }
+        for line, expected in cases.items():
+            with self.subTest(line=line):
+                self.assertEqual(extractor.extract_full_account_from_line(line), expected)
+
+    def test_custodian_suffix_is_removed_only_after_complete_pension_account(self):
+        line = "3600057500 天津市拾号职业年金计划－中信银行股份有限公司 1000万 约定号13520001"
+        self.assertEqual(
+            extractor.extract_full_account_from_line(line),
+            "天津市拾号职业年金计划",
+        )
 
 
 if __name__ == "__main__":
