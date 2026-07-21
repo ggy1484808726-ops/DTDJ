@@ -502,6 +502,31 @@ class BondNameExtractionTests(unittest.TestCase):
         self.assertEqual(rows[0]["对方账户"], "粤开证券")
         self.assertEqual(rows[0]["过券"], "粤开证券")
 
+    def test_account_org_and_execution_broker_are_split_before_icode(self):
+        text = """283014.SH 26鹰融01 300 净价100 中信信托华盈添利4号 i020070111
+出给 云南信托 广发证券 i020012913
+约定号 511 2026-06-30 交易"""
+        row = extractor.parse_text(text)[0]
+        self.assertEqual(row["对方账户"], "云南信托")
+        self.assertEqual(row["过券"], "广发证券")
+        self.assertEqual(row["对手方交易员代码"], "i020012913")
+
+    def test_single_broker_can_be_both_account_org_and_execution_org(self):
+        text = """283014.SH 26鹰融01 300 净价100 中信信托华盈添利4号 i020070111
+出给 广发证券 i020012913
+约定号 511 2026-06-30 交易"""
+        row = extractor.parse_text(text)[0]
+        self.assertEqual(row["对方账户"], "广发证券")
+        self.assertEqual(row["过券"], "广发证券")
+
+    def test_account_and_execution_org_split_does_not_require_icode(self):
+        text = """283014.SH 26鹰融01 300 净价100 中信信托华盈添利4号
+出给 云南信托 广发证券
+交易主体代码 3600001825 约定号 511 2026-06-30 交易"""
+        row = extractor.parse_text(text)[0]
+        self.assertEqual(row["对方账户"], "云南信托")
+        self.assertEqual(row["过券"], "广发证券")
+
     def test_t8_supplement_enriches_metadata_without_overwriting_main_counterparty(self):
         text = """520238.SZ 26黄控01 8000 净价100 中信信托信昱11号 交易商号: 000262 交易员号：007A0001 交易主体代码：3600000001 交易主体名称：中信证券股份有限公司机构经纪
 出给  中信建投

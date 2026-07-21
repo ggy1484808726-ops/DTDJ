@@ -330,9 +330,57 @@ def _leading_org(seg, mine_related):
     return ""
 
 
-def resolve_guoquan(seg, dealer_code="", subject_name="", head="", account="", mine_related=lambda _: False):
+def extract_account_execution_orgs(seg, mine_related=lambda _: False):
+    """用角色证据而非固定句式，区分对手方的账户机构与执行机构。
+
+    显式标签、已知交易商身份、机构类型、产品语义和交易元数据都只是加分证据；
+    i/Z码或任一单独位置均不是必要条件。证据不足时不强拆，交给原有回落链处理。
+    """
+    for raw in (seg or "").splitlines():
+        line = RE_LEAD_ENUM.sub('', raw).strip()
+        if not line:
+            continue
+        line = re.sub(r'^(?:出给|to|from|买入方?|卖出方?|买方|卖方)\s*[:：]?\s*', '', line, flags=re.I)
+        entities = []
+        for match in RE_ORG.finditer(line):
+            org = _clean_org_candidate(match.group(1), mine_related)
+            if org:
+                left = line[max(0, match.start() - 18):match.start()]
+                right = line[match.end():match.end() + 50]
+                execution_score = 0
+                account_score = 0
+                if re.search(r'(?:过券(?:机构)?|经纪商|通道机构|交易商名称|交易商简称)\s*[:：]?\s*$', left):
+                    execution_score += 100
+                if org in DEALER_ORG_NAMES:
+                    execution_score += 60
+                if re.search(r'(?:证券资管|证券自营|证券机构经纪|证券)$', org):
+                    execution_score += 40
+                if re.search(r'交易商|交易员|交易主体|席位|i\d{9}|[A-Za-z]*[Zz]\d{5,}', right, re.I):
+                    execution_score += 15
+
+                if re.search(r'(?:账户|产品|计划|组合|基金)所属(?:机构)?\s*[:：]?\s*$', left):
+                    account_score += 100
+                if re.search(r'(?:信托|银行|基金|资管|养老|保险|人寿|财富|资产)$', org):
+                    account_score += 40
+                if re.search(r'号|计划|组合|基金|年金|产品|私募', right):
+                    account_score += 30
+                entities.append((org, execution_score, account_score))
+        if len(entities) < 2:
+            continue
+        if len({item[0] for item in entities}) == 1:
+            return entities[0][0], entities[0][0]
+        execution_index = max(range(len(entities)), key=lambda i: (entities[i][1], i))
+        account_indexes = [i for i in range(len(entities)) if i != execution_index]
+        account_index = max(account_indexes, key=lambda i: (entities[i][2], -i))
+        if entities[execution_index][1] >= 40 and entities[account_index][2] >= 30:
+            return entities[account_index][0], entities[execution_index][0]
+    return "", ""
+
+
+def resolve_guoquan(seg, dealer_code="", subject_name="", head="", account="", execution_org="", mine_related=lambda _: False):
     candidates = [
         _explicit_guoquan(seg, mine_related),
+        _clean_org_candidate(execution_org, mine_related),
         _dealer_org_on_line(seg, dealer_code, mine_related),
         dealer_name_from_code(dealer_code),
         _leading_org(seg, mine_related),

@@ -456,6 +456,11 @@ def resolve_counterparty(otherseg, rec="", mine="", self_subjects=frozenset()):
     o_prod   = pick_prod(otherseg)
     o_labeled = extract_role_account(otherseg, "counter") or extract_role_account(rec, "counter")
     o_head   = extract_counterparty_head(otherseg)
+    role_account_org, role_execution_org = counterparty.extract_account_execution_orgs(
+        otherseg, mine_related_text
+    )
+    if role_account_org:
+        o_head = role_account_org
     acct = resolve_counterparty_account(
         labeled=o_labeled,
         subject_name=o_subjname,
@@ -468,6 +473,7 @@ def resolve_counterparty(otherseg, rec="", mine="", self_subjects=frozenset()):
         subject_name=o_subjname,
         head=o_head,
         account=acct,
+        execution_org=role_execution_org,
     )
     if not acct and org:
         # 对方只报机构、未报产品账户时，机构本身可作为对方账户；动作词和标签噪声不会进入这里。
@@ -1651,9 +1657,9 @@ def org_from_account(account):
     return counterparty.org_from_account(account, mine_related_text)
 
 
-def resolve_guoquan(seg, dealer_code="", subject_name="", head="", account=""):
+def resolve_guoquan(seg, dealer_code="", subject_name="", head="", account="", execution_org=""):
     return counterparty.resolve_guoquan(
-        seg, dealer_code, subject_name, head, account, mine_related=mine_related_text
+        seg, dealer_code, subject_name, head, account, execution_org, mine_related=mine_related_text
     )
 
 
