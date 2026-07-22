@@ -663,6 +663,9 @@ def _make_row(ctx, size, yd, acct=None, subj=None):
 def _resolve_multi_rows(ctx, allow_subject_anchor=False):
     # 多笔优先级固定为：结构块解析 -> 旧专用规则 -> 约定号锚点兜底 -> 无约定号主体锚点。
     # 这样模板判定依赖结构，不让样本内正则先抢走主链路。
+    multi = extract_counterparty_trade_rows(ctx["counter_seg"], yds=ctx["yds"])
+    if multi:
+        return multi, bool(ctx["yds"])
     multi = extract_splits_structured(ctx["counter_seg"], yds=ctx["yds"], allow_missing_yd=allow_subject_anchor and not ctx["yds"])
     multi_from_anchor = False
     if multi:
@@ -694,9 +697,10 @@ def _append_multi_rows(ctx, multi, multi_from_anchor=False):
             if m.group(0) != my_i:
                 sh_tcode = m.group(0)
                 break
-    for acct, subj, sz, yd, tcode in multi:
+    for item in multi:
+        acct, subj, sz, yd, tcode, explicit_row_org = _multi_parts(item)
         r = _make_row(ctx, sz, yd, acct=acct, subj=subj)
-        row_org = org_from_account(acct)
+        row_org = explicit_row_org or org_from_account(acct)
         r["对手方交易员"] = o_person
         r["对手方交易员代码"] = tcode or sh_tcode or otc
         if ctx["mkt"] == "深交所":
@@ -719,7 +723,7 @@ def _append_multi_rows(ctx, multi, multi_from_anchor=False):
         for r in rows:
             if not r["备注"]:
                 r["备注"] = "拆单笔数与约定号数量不一致，需人工核对"
-    subjs = [subj for _, subj, _, _, _ in multi if subj]
+    subjs = [_multi_parts(item)[1] for item in multi if _multi_parts(item)[1]]
     if subjs and len(set(subjs)) < len(subjs):
         for r in rows:
             if not r["备注"]:
@@ -727,8 +731,8 @@ def _append_multi_rows(ctx, multi, multi_from_anchor=False):
     if not multi_from_anchor:
         anchor_check = extract_splits_by_yd_anchor(ctx["counter_seg"])
         if anchor_check:
-            subj_a = {s for _, s, _, _, _ in multi if s}
-            subj_b = {s for _, s, _, _, _ in anchor_check if s}
+            subj_a = {_multi_parts(item)[1] for item in multi if _multi_parts(item)[1]}
+            subj_b = {_multi_parts(item)[1] for item in anchor_check if _multi_parts(item)[1]}
             if subj_a and subj_b and subj_a != subj_b:
                 for r in rows:
                     if not r["备注"]:
@@ -1278,6 +1282,67 @@ def _line_trade_code(line):
     if not m:
         return ""
     return m.group(1).upper() if m.lastindex else m.group(0)
+
+
+def _multi_parts(item):
+    """兼容旧的5字段拆单结果和新的6字段逐行结果。"""
+    if len(item) >= 6:
+        return item[:6]
+    acct, subj, size, yd, tcode = item
+    return acct, subj, size, yd, tcode, ""
+
+
+def _execution_org_from_repeated_bond_line(line, tcode=""):
+    """取重复债券明细行中的执行机构；短称必须与Z/i码相邻才入选。"""
+    text = _norm_basic(line or "")
+    price = re.search(r'(?:净价|成交净价|交易净价)\s*[:：]?\s*\d+(?:\.\d+)?', text)
+    tail = text[price.end():] if price else text
+    orgs = [normalize_visible_org(m.group(1)) for m in RE_ORG.finditer(tail)]
+    orgs = [org for org in orgs if org and not mine_related_text(org)]
+    if orgs:
+        return orgs[-1]
+    if not tcode:
+        return ""
+    code_match = re.search(re.escape(tcode), tail, re.I)
+    before_code = tail[:code_match.start()] if code_match else tail
+    short_match = re.search(r'([一-龥]{2,20})\s*$', before_code)
+    if not short_match:
+        return ""
+    candidate = short_match.group(1)
+    if re.search(r'号|计划|组合|基金|年金|产品|私募', candidate):
+        return ""
+    return candidate
+
+
+def extract_counterparty_trade_rows(seg, yds=None):
+    """
+    逐行交易锚点：对方段内的“账户 + 规模 + 机构”各自成笔。
+
+    债券代码可以在每行重复，也可以只写在公共头中；方括号、冒号等只做清洗，
+    不参与模板判定。返回值比旧拆单结果多一个row_org，用于保留每行自己的过券机构。
+    """
+    parsed = []
+    for raw in (seg or "").splitlines():
+        line = _strip_leading_enum(raw).strip()
+        bond = RE_BOND.search(line)
+        size_anchor = RE_SIZE_TOKEN.search(line)
+        if not size_anchor:
+            continue
+        account_end = bond.start() if bond and bond.start() < size_anchor.start() else size_anchor.start()
+        account = _clean_counterparty_candidate(line[:account_end]).strip(' 　\t：:，,；;（）()')
+        size = _gen_size(line)
+        tcode = _line_trade_code(line)
+        row_org = _execution_org_from_repeated_bond_line(line, tcode=tcode)
+        if not account or not size or not row_org:
+            continue
+        parsed.append((account, '', size, '', tcode, row_org))
+    if len(parsed) < 2:
+        return []
+    yds = list(yds or [])
+    return [
+        (acct, subj, size, yds[i] if i < len(yds) else '', tcode, row_org)
+        for i, (acct, subj, size, _, tcode, row_org) in enumerate(parsed)
+    ]
 
 
 def _slice_structured_counterparty_blocks(seg, yds=None):

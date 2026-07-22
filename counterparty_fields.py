@@ -377,10 +377,38 @@ def extract_account_execution_orgs(seg, mine_related=lambda _: False):
     return "", ""
 
 
+def _unique_execution_org_for_product(seg, account, mine_related):
+    """产品型对方账户之外只有一个高置信机构时，将该机构作为过券候选。
+
+    不仅凭“位于账户后面”判断；候选机构还必须具备已知交易商身份、
+    证券类机构后缀，或紧邻交易商/交易员/席位代码等执行证据。
+    """
+    if not looks_like_account_name(account):
+        return ""
+    candidates = []
+    for match in RE_ORG.finditer(seg or ""):
+        org = _clean_org_candidate(match.group(1), mine_related)
+        if not org:
+            continue
+        right = (seg or "")[match.end():match.end() + 50]
+        execution_score = 0
+        if org in DEALER_ORG_NAMES:
+            execution_score += 60
+        if re.search(r'(?:证券资管|证券自营|证券机构经纪|证券)$', org):
+            execution_score += 40
+        if re.search(r'交易商|交易员|交易主体|席位|i\d{9}|[A-Za-z]*[Zz]\d{5,}', right, re.I):
+            execution_score += 15
+        if execution_score >= 40:
+            candidates.append(org)
+    unique = list(dict.fromkeys(candidates))
+    return unique[0] if len(unique) == 1 else ""
+
+
 def resolve_guoquan(seg, dealer_code="", subject_name="", head="", account="", execution_org="", mine_related=lambda _: False):
     candidates = [
         _explicit_guoquan(seg, mine_related),
         _clean_org_candidate(execution_org, mine_related),
+        _unique_execution_org_for_product(seg, account, mine_related),
         _dealer_org_on_line(seg, dealer_code, mine_related),
         dealer_name_from_code(dealer_code),
         _leading_org(seg, mine_related),

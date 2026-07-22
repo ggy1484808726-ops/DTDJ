@@ -519,6 +519,66 @@ class BondNameExtractionTests(unittest.TestCase):
         self.assertEqual(row["对方账户"], "广发证券")
         self.assertEqual(row["过券"], "广发证券")
 
+    def test_product_account_and_unique_broker_fill_execution_org(self):
+        text = """282433.SH 26钟吾01 5000 净价100 中信信托信昱11号证券投资信托计划 Z06308
+出给
+【宝鼎1号】282433.SH 26钟吾01 2000w 净价100 广发证券 i020012913"""
+        row = extractor.parse_text(text)[0]
+        self.assertEqual(row["对方账户"], "宝鼎1号")
+        self.assertEqual(row["过券"], "广发证券")
+        self.assertEqual(row["对手方交易员代码"], "i020012913")
+
+    def test_product_account_does_not_treat_unscored_org_as_execution_org(self):
+        text = "282433.SH 26钟吾01 5000 净价100 中信信托信昱11号 出给 宝鼎1号 某某银行"
+        row = extractor.parse_text(text)[0]
+        self.assertEqual(row["对方账户"], "宝鼎1号")
+        self.assertEqual(row["过券"], "")
+
+    def test_repeated_bond_rows_keep_each_account_execution_org_and_code(self):
+        text = """282433.SH 26钟吾01 5000 净价100 中信信托信昱11号证券投资信托计划 Z06308
+出给
+【宝鼎1号】282433.SH 26钟吾01 2000w 净价100 广发证券 Z08705
+【宝鼎4号】282433.SH 26钟吾01 1500w 净价100 申万宏源 Z05120
+【长三角】282433.SH 26钟吾01 1500w 净价100 广发证券 Z08705
+约定号 944+945+946 2026-05-11 交易"""
+        rows = extractor.parse_text(text)
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(
+            [(r["对方账户"], r["交易规模万"], r["过券"], r["对手方交易员代码"], r["约定号"]) for r in rows],
+            [
+                ("宝鼎1号", 2000, "广发证券", "Z08705", "944"),
+                ("宝鼎4号", 1500, "申万宏源", "Z05120", "945"),
+                ("长三角", 1500, "广发证券", "Z08705", "946"),
+            ],
+        )
+        self.assertTrue(all(not r["备注"] for r in rows))
+
+    def test_repeated_bond_rows_do_not_require_square_brackets(self):
+        text = """282433.SH 26钟吾01 5000 净价100 中信信托信昱11号 Z06308
+出给
+宝鼎1号 282433.SH 26钟吾01 2000w 净价100 广发证券 Z08705
+宝鼎4号：282433.SH 26钟吾01 1500w 净价100 申万宏源 Z05120
+长三角 282433.SH 26钟吾01 1500w 净价100 广发证券 Z08705
+约定号 944+945+946"""
+        rows = extractor.parse_text(text)
+        self.assertEqual([r["对方账户"] for r in rows], ["宝鼎1号", "宝鼎4号", "长三角"])
+        self.assertEqual([r["过券"] for r in rows], ["广发证券", "申万宏源", "广发证券"])
+
+    def test_counterparty_rows_can_inherit_shared_bond_information(self):
+        text = """282433.SH 26钟吾01 5000 净价100 中信信托信昱11号 Z06308
+出给
+宝鼎1号 2000w 广发证券 Z08705
+宝鼎4号 1500w 申万宏源 Z05120
+长三角 1500w 广发证券 Z08705
+约定号 944+945+946"""
+        rows = extractor.parse_text(text)
+        self.assertEqual(len(rows), 3)
+        self.assertTrue(all(r["债券代码"] == "282433.SH" for r in rows))
+        self.assertTrue(all(r["债券简称"] == "26钟吾01" for r in rows))
+        self.assertEqual([r["对方账户"] for r in rows], ["宝鼎1号", "宝鼎4号", "长三角"])
+        self.assertEqual([r["过券"] for r in rows], ["广发证券", "申万宏源", "广发证券"])
+        self.assertEqual([r["约定号"] for r in rows], ["944", "945", "946"])
+
     def test_account_and_execution_org_split_does_not_require_icode(self):
         text = """283014.SH 26鹰融01 300 净价100 中信信托华盈添利4号
 出给 云南信托 广发证券
